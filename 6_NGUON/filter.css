@@ -1,0 +1,29 @@
+/* ── Bộ lọc thông minh, bảng cha–con ── */
+[hidden]{display:none!important}
+.sf{margin-bottom:var(--s3)}
+.sf-bar{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center;margin:0 0 var(--s2)}
+.sf-bar input,.sf-bar select{width:auto;min-height:40px}
+.sf-bar input.sf-q{flex:1 1 260px;min-width:200px;max-width:420px}
+.sf-bar .sf-d{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);white-space:nowrap}.sf-bar .sf-d input{width:120px}
+.sf-bar select{max-width:190px}
+.sf-adv.has{background:var(--info-soft);color:var(--info)}
+.fchips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 var(--s2)}.fchips:empty{display:none}
+.fchip{min-height:28px;padding:3px 10px;font-size:12px;border-radius:14px;background:var(--info-soft);color:var(--info);border:1px solid transparent}
+.fchip:hover{border-color:var(--info)}
+.sf-sum{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:baseline;font-size:12.5px;color:var(--ink-soft);margin-bottom:var(--s2)}.sf-sum b{color:var(--ink)}
+.sfa{display:flex;flex-direction:column;gap:var(--s3)}
+.sfa-g{border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px 4px;margin:0;min-width:0}.sfa-g legend{padding:0 6px;font-weight:600;font-size:12.5px;color:var(--ink-soft)}
+.sfa-g .grid{align-items:start}
+.sfa-flags{display:flex;flex-wrap:wrap;gap:6px 18px;padding:0 0 10px}.sfa-flag{display:inline-flex;align-items:center;gap:6px;min-height:32px}
+.sfm{display:flex;flex-direction:column;gap:6px}
+.sfm-list{border:1px solid var(--border);border-radius:8px;max-height:168px;overflow:auto;padding:4px 10px;background:var(--surface)}
+.sfm-row{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:13px}
+.md-table th.md-th,.md-table td.md-td{width:38px;padding-left:6px;padding-right:2px}
+.md-toggle{min-height:30px;min-width:30px;padding:2px 6px;border:1px solid var(--border);background:var(--surface);border-radius:6px;line-height:1}
+tr.md-detail>td{background:var(--bg-soft2);padding:10px 14px;border-left:3px solid var(--brand)}
+.md-body{display:flex;flex-direction:column;gap:10px}
+.md-title{font-weight:700;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.md-rec{display:inline-flex;flex-wrap:wrap;gap:10px;font-weight:400;font-size:12.5px;color:var(--ink-soft)}.md-recitem{display:inline-flex;gap:4px;align-items:center}
+.md-cardbox{margin-top:8px;border-top:1px dashed var(--border);padding-top:8px}
+.md-tools{margin:0 0 var(--s2)}
+.md-body .tablewrap{max-height:none}
