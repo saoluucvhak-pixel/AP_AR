@@ -783,6 +783,20 @@ await suite('40. R36: chi tiết đơn có USD đã ghi nhận hiện thẻ "Lã
   await go(pg,'#/order/o2',900);eq(await pg.locator('[data-base-totals]').count(),0,'đơn chỉ VND không hiện thẻ quy đổi');
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('41. R09 trên giao diện: có ô "Đơn hàng cụ thể" và "Tìm theo số đơn / PO"; chọn một đơn thì báo cáo chỉ còn đơn đó và tiêu đề ghi tên đơn',async()=>{
+  const w=build();w.T.Accrual.push({id:'r41',orderId:'o2',kind:'REVENUE',partnerId:'p2',accrualDate:'2026-10-05',feeTypeCode:'F',description:'DH-2 doanh thu',netMinor:700,vatMode:'NONE',vatMinor:0,grossMinor:700,isPassThrough:0,currency:'VND',status:'INVOICED',docId:'',debtLineId:'',serviceCode:'',version:1});
+  const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/reports',900);
+  await pg.evaluate(()=>{const c=document.querySelector('select');c.value='R09';c.dispatchEvent(new Event('change'))});await pg.waitForTimeout(600);
+  const fld=t=>pg.locator('.field',{hasText:t}).first();
+  eq(await fld('Đơn hàng cụ thể').locator('select').count(),1,'có ô chọn đơn hàng');eq(await fld('Tìm theo số đơn / PO').locator('input').count(),1,'có ô tìm số đơn/PO');
+  const opts=await fld('Đơn hàng cụ thể').locator('option').allInnerTexts();ok(opts.some(t=>/DH-1/.test(t))&&opts.some(t=>/DH-2/.test(t)),'danh sách đơn có DH-1, DH-2: '+opts.join('|'));
+  await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);let tx=await pg.locator('.report').innerText();ok(/DH-1/.test(tx)&&/DH-2/.test(tx),'chưa lọc: thấy cả hai đơn');
+  const val=await pg.evaluate(()=>{const s=[...document.querySelectorAll('.field')].find(f=>/Đơn hàng cụ thể/.test(f.textContent)).querySelector('select');const o=[...s.options].find(x=>/DH-2/.test(x.textContent));return o.value});
+  await fld('Đơn hàng cụ thể').locator('select').selectOption(val);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);tx=await pg.locator('.report').innerText();
+  ok(/DH-2/.test(tx)&&!/DH-1/.test(tx),'lọc DH-2: không còn DH-1: '+tx.slice(0,300));ok(/Đơn hàng: DH-2/.test(tx),'tiêu đề ghi đơn đang lọc');eq(last(calls,'report.run').payload.params.orderId,val,'gửi orderId lên máy chủ');
+  await fld('Đơn hàng cụ thể').locator('select').selectOption('');await fld('Tìm theo số đơn / PO').locator('input').fill('DH-1');await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);tx=await pg.locator('.report').innerText();
+  ok(/DH-1/.test(tx)&&!/DH-2/.test(tx),'tìm "DH-1": chỉ còn DH-1');ok(/số đơn\/PO chứa/.test(tx),'tiêu đề ghi điều kiện tìm');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

@@ -91,4 +91,15 @@ suite('11. R09: chỉ VND thì không có phần quy đổi; chứng từ thiế
   const rows=b.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows,g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.stt)),tot=rows.slice(g).find(r=>r.t==='total').cells;
   eq(tot.rev,25000,'chỉ chứng từ có tỷ giá được tính');ok(/Thiếu tỷ giá: 1/.test(tot.state),tot.state);ok(rows.slice(g).some(r=>r.t==='data'&&r.cells.order==='DH-1'&&/Thiếu tỷ giá/.test(r.cells.state)),'dòng của đơn thiếu tỷ giá được đánh dấu');
 });
+suite('12. R09: lọc đơn hàng cụ thể (orderId) và tìm theo số đơn/PO (q); lọc theo đơn thì bỏ dòng "Chi phí chung"; tiêu đề ghi đơn đang lọc',()=>{
+  const {ctx,T}=world();T.DebtDoc.push(ddoc('d1','USD',253000),ddoc('d2','USD',250000));T.Order[1].poNo='XYZ-77';
+  T.Accrual.push(ac('a','o1','REVENUE','USD',193000,'INVOICED','d1'),ac('b','o1','COST','USD',50000,'INVOICED','d1'),ac('c','o2','REVENUE','USD',100000,'INVOICED','d2'),ac('g','','COST','VND',9000,'INVOICED','d3'));
+  const run=p=>ctx.rep09_(full,'R09',Object.assign({asOf:'2026-10-27'},p)),names=r=>[...r.rows.filter(x=>x.t==='data'&&x.currency==='USD').map(x=>x.cells.order)]; // [...] đưa về mảng của realm này (dữ liệu từ vm khác prototype)
+  eq(names(run({})).sort(),['DH-1','DH-2'],'không lọc: cả hai đơn');ok(run({}).rows.some(x=>x.t==='data'&&x.cells.order==='Chi phí chung'),'không lọc: có chi phí chung');
+  const r1=run({orderId:'o1'});eq(names(r1),['DH-1'],'lọc đơn o1');ok(!r1.rows.some(x=>x.cells.order==='Chi phí chung'),'lọc theo đơn: bỏ chi phí chung');eq(r1.rows.find(x=>x.t==='total'&&x.currency==='USD').cells.margin,143000);eq(r1.meta.order,'DH-1 · PO PO1');
+  const r2=run({orderId:'o2'});eq(names(r2),['DH-2']);eq(r2.rows.find(x=>x.t==='total'&&x.currency==='USD').cells.rev,100000);
+  const q1=run({q:'xyz'});eq(names(q1),['DH-2'],'tìm theo PO, không phân biệt hoa thường');eq(q1.meta.order,'số đơn/PO chứa "xyz"');eq(names(run({q:'dh-1'})),['DH-1'],'tìm theo số đơn');
+  eq(names(run({orderId:'o1',q:'xyz'})),[],'hai điều kiện cùng áp dụng (và)');const none=run({orderId:'khong-co'});eq(none.rows.filter(x=>x.t==='data').length,0,'đơn không tồn tại/ngoài phạm vi: rỗng');ok(none.notes.some(n=>/Chưa có đơn hàng/.test(n)));eq(none.meta.order,'(không có trong phạm vi xem)');
+  const tot=run({orderId:'o1'}).rows.filter(x=>x.t==='total'&&/QUY ĐỔI/.test(x.cells.order||''))[0];ok(!tot||tot.cells.rev===Math.round(1930*25.3),'phần quy đổi chỉ gồm đơn đã lọc');
+});
 console.log('Tổng kiểm tra:',steps);
