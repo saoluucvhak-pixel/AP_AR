@@ -4532,6 +4532,53 @@ function orderReconcile_(oo, rows, proj) {
     });
     return { byCurrency: cur, splitMismatches: bad, childOk: ok && !bad.length };
 }
+// R36: lãi gộp quy đổi VND (THAM KHẢO) của một đơn. Chỉ tính khoản ĐÃ GHI NHẬN (INVOICED, không phải thu hộ/chi hộ): khoản chưa lập hóa đơn chưa là doanh thu/chi phí ghi nhận nên không vào lãi.
+// Mỗi lần ghi nhận (hóa đơn gốc và từng điều chỉnh) quy đổi theo tỷ giá ĐÃ LƯU trên chính chứng từ đó (fxRateE4); VND giữ nguyên. Khoản đã ghi nhận nhưng chứng từ chưa có tỷ giá thì không tính và đếm vào missing.
+// Phần chia nhiều đơn: chia theo tỷ lệ phần của khoản gốc.
+function orderBaseTotals_(list, asOf, ctx, accById) {
+    var cm = currencyMap_(), out = { currency: BASE_CUR_, revenue: 0, cost: 0, margin: 0, marginPct: null, byCurrency: {}, missing: 0 }, pcache = {};
+    function parentTotals_(pid, cur) {
+        if (pcache[pid])
+            return pcache[pid];
+        var p = accById[pid], dec = (cm[cur] || { decimals: 0 }).decimals, res = pcache[pid] = { N: 0, B: 0, ok: true };
+        if (!p) {
+            res.ok = false;
+            return res;
+        }
+        var cand = Object.keys(ctx.byAcc[pid] || {}).map(function (k) { return ctx.byAcc[pid][k]; }).filter(function (d) { return d.docType !== 'ADJ_INC' && d.docType !== 'ADJ_DEC' && d.status === 'POSTED' && (d.postingDate || docEffDate_(d)) <= asOf && !(ctx.revOf[d.id] && ctx.revOf[d.id] <= asOf); });
+        var d0 = cand[0] || (p.docId ? ctx.docById[p.docId] : null);
+        function add(net, rate) {
+            res.N += net;
+            if (cur === BASE_CUR_)
+                res.B += net;
+            else if (rate > 0)
+                res.B += fxToBase_(net, dec, rate);
+            else
+                res.ok = false;
+        }
+        add(p.netMinor, d0 ? d0.fxRateE4 : 0);
+        (ctx.adjBy[pid] || []).forEach(function (x) { if (x.eff <= asOf)
+            add(x.net, x.rate); });
+        return res;
+    }
+    list.forEach(function (a) {
+        if (a.status !== 'INVOICED' || a.isPassThrough)
+            return;
+        var pid = a.sharedFrom || a.id, pt = parentTotals_(pid, a.currency);
+        if (!pt.ok) {
+            out.missing++;
+            return;
+        }
+        var base = !a.sharedFrom ? pt.B : (pt.N === 0 ? 0 : Number((BigInt(a.netMinor) * BigInt(pt.B) * BigInt(2) + BigInt(pt.N)) / (BigInt(pt.N) * BigInt(2)))), rev = a.kind === 'REVENUE', bc = out.byCurrency[a.currency] = out.byCurrency[a.currency] || { foreign: 0, base: 0 };
+        out[rev ? 'revenue' : 'cost'] += base;
+        bc.foreign += a.netMinor;
+        bc.base += base;
+    });
+    Object.keys(out.byCurrency).forEach(function (c) { var b = out.byCurrency[c], dec = (cm[c] || { decimals: 0 }).decimals; b.avgRate = b.foreign ? Math.round(b.base / (b.foreign / Math.pow(10, dec)) * 100) / 100 : null; });
+    out.margin = out.revenue - out.cost;
+    out.marginPct = out.revenue > 0 ? Math.round(out.margin * 10000 / out.revenue) / 100 : null;
+    return out;
+}
 function orderGet_(user, req) {
     requirePerm_(user, 'read');
     var o = repoFind_('Order', req.payload.id);
@@ -4553,6 +4600,7 @@ function orderGet_(user, req) {
         linked[a.docId] = { id: a.docId, docNo: a.docNo, status: a.docStatus, direction: a.kind === 'REVENUE' ? 'AR' : 'AP', invoiceNo: a.invoiceNo }; });
     var actx = accrualCtx_(), proj = acc.map(function (x) { return accrualAt_(x, todayVn_(), actx); }).filter(Boolean), oo = orderOut_(o, { pm: pm, accByOrder: { [o.id]: proj } });
     var rc = orderReconcile_(oo, out, proj);
+    oo.baseTotals = orderBaseTotals_(proj, todayVn_(), actx, byId_(repoValid_('Accrual')));
     return { order: oo, accruals: out, reconcile: rc, documents: Object.keys(linked).map(function (k) { return linked[k]; }), canEdit: can_(user, 'order.write') && o.status === 'OPEN', asOf: asOf };
 }
 function orderSave_(user, req) {
@@ -9021,7 +9069,7 @@ function accrualCtx_() {
         var d = docById[l.docId], aid = lineAcc[l.adjustsLineId];
         if (!aid || !d || (d.docType !== 'ADJ_INC' && d.docType !== 'ADJ_DEC') || d.status !== 'POSTED')
             return;
-        (adjBy[aid] = adjBy[aid] || []).push({ eff: d.postingDate || docEffDate_(d), net: l.netMinor || 0, gross: l.grossMinor || 0 });
+        (adjBy[aid] = adjBy[aid] || []).push({ eff: d.postingDate || docEffDate_(d), net: l.netMinor || 0, gross: l.grossMinor || 0, rate: d.fxRateE4 || 0 });
     });
     return { docById: docById, byAcc: byAcc, revOf: revOf, adjBy: adjBy, accById: byId_(repoValid_('Accrual')), splitsBy: groupBy_(repoValid_('AccrualSplit'), function (x) { return x.accrualId; }) };
 }

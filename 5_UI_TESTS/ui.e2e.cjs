@@ -773,6 +773,16 @@ await suite('39. Khởi động: lỗi trong lượt gộp (bootstrap không dù
   const w2=build();w2.ctx.routes_()['app.bootstrap'].fn=function(){throw Object.assign(new Error('FORBIDDEN'),{code:'FORBIDDEN',userMessage:'Không có quyền'})};
   const p2=await newPage(browser,w2);ok(await p2.pg.locator('.splash-card').count()>0,'hiện thông báo không đăng nhập được');await p2.pg.close();
 });
+await suite('40. R36: chi tiết đơn có USD đã ghi nhận hiện thẻ "Lãi gộp quy đổi VND (tham khảo)" theo tỷ giá chứng từ; khoản chưa lập hóa đơn không vào lãi; đơn chỉ VND không hiện thẻ',async()=>{
+  const w=build();w.T.DebtDoc.push(mkdoc('d9',{currency:'USD',fxRateE4:253000,docDate:'2026-10-01',postingDate:'2026-10-01'},100000));
+  w.T.Accrual.push({id:'ru1',orderId:'o1',kind:'REVENUE',partnerId:'p1',accrualDate:'2026-10-01',feeTypeCode:'F',description:'USD HĐ',netMinor:100000,vatMode:'NONE',vatMinor:0,grossMinor:100000,isPassThrough:0,currency:'USD',status:'INVOICED',docId:'d9',debtLineId:'',serviceCode:'FWD',version:1},
+    {id:'ru2',orderId:'o1',kind:'REVENUE',partnerId:'p1',accrualDate:'2026-10-02',feeTypeCode:'F',description:'USD chưa HĐ',netMinor:777700,vatMode:'NONE',vatMinor:0,grossMinor:777700,isPassThrough:0,currency:'USD',status:'OPEN',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
+  const {pg,errs}=await newPage(browser,w);await go(pg,'#/order/o1',900);
+  const card=pg.locator('[data-base-totals]');eq(await card.count(),1,'có thẻ quy đổi');const tx=await card.innerText();
+  ok(/Lãi gộp quy đổi VND/.test(tx),tx);ok(/25\.300/.test(tx),'1.000 USD × 25,30 = 25.300 VND: '+tx);ok(!/777/.test(tx.replace(/\s/g,'')),'khoản chưa lập hóa đơn (7.777 USD) không vào thẻ quy đổi');ok(/bình quân/.test(tx),'ghi tỷ giá bình quân');
+  await go(pg,'#/order/o2',900);eq(await pg.locator('[data-base-totals]').count(),0,'đơn chỉ VND không hiện thẻ quy đổi');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;
