@@ -797,6 +797,15 @@ await suite('41. R09 trên giao diện: có ô "Đơn hàng cụ thể" và "Tì
   await fld('Đơn hàng cụ thể').locator('select').selectOption('');await fld('Tìm theo số đơn / PO').locator('input').fill('DH-1');await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);tx=await pg.locator('.report').innerText();
   ok(/DH-1/.test(tx)&&!/DH-2/.test(tx),'tìm "DH-1": chỉ còn DH-1');ok(/số đơn\/PO chứa/.test(tx),'tiêu đề ghi điều kiện tìm');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('42. Tổng hợp công nợ (tab Khách hàng/NCC) có cột "Còn nợ ròng (đã trừ tiền chưa phân bổ)" = còn nợ theo chứng từ − tiền chưa phân bổ',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await go(pg,'#/summary',1500);
+  const heads=await pg.locator('th').allInnerTexts();ok(heads.some(t=>/Còn nợ ròng/.test(t)),'có cột còn nợ ròng: '+heads.join('|'));
+  const d=await pg.evaluate(async()=>{const r=await api('summary.partners',{});return r.items.map(x=>({name:x.name,net:x.net,out:x.AR,adv:x.adv}))});
+  ok(d.length>0,'có đối tác');d.forEach(x=>['AR','AP'].forEach(dir=>{const cs=new Set([...Object.keys(x.out&&dir==='AR'?x.out:{}),...Object.keys((x.adv||{})[dir]||{})]);Object.keys(x.net[dir]).forEach(c=>ok(cs.has(c)||dir==='AP','net chỉ có ở tiền tệ có công nợ hoặc ứng trước')) }));
+  const hi=heads.findIndex(t=>/Còn nợ ròng/.test(t));const row=pg.locator('tbody tr',{hasText:'ABC'}).first();const cell=(await row.locator('td').allInnerTexts())[hi];
+  const abc=d.find(x=>x.name==='ABC'),n=abc&&abc.net.AR.VND;ok(n===undefined?/—/.test(cell):new RegExp('Phải thu').test(cell),'ô còn nợ ròng của ABC hiển thị đúng dạng: '+cell+' / net='+n);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

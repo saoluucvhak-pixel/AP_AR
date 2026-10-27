@@ -8427,15 +8427,24 @@ function rep02_(user, code, params) {
         return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
-    var grand = {}, cur = null, sub = null, n = 0, lastKey = '';
+    var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT';
+
+    led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
+        advBy[x.partnerId + '|' + x.currency] = (advBy[x.partnerId + '|' + x.currency] || 0) + b.unalloc; });
     function flush() { if (sub) {
         addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name, currency: sub.cur, gross: sub.g, settled: sub.s, out: sub.o }, sub.cur);
+        var adv = advBy[sub.key] || 0;
+        if (adv) {
+            addRow_(rep, 'data', { desc: (dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)'), currency: sub.cur, settled: adv, out: -adv }, sub.cur);
+            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
+            sumCur_(grand, sub.cur, 'a', adv);
+        }
     } }
     docs.forEach(function (d) {
         var key = d.partnerId + '|' + d.currency;
         if (key !== lastKey) {
             flush();
-            sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0 };
+            sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0, key: key };
             addRow_(rep, 'group', { desc: sub.name + ' (' + d.currency + ')' }, d.currency);
             lastKey = key;
         }
@@ -8450,9 +8459,17 @@ function rep02_(user, code, params) {
         sumCur_(grand, d.currency, 'o', b.out);
     });
     flush();
-    Object.keys(grand).sort().forEach(function (c) { addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c); });
+    Object.keys(grand).sort().forEach(function (c) {
+        addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
+        var ga = grand[c].a || 0;
+        if (ga) {
+            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)', currency: c, settled: ga, out: -ga }, c);
+            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
+        }
+    });
     if (!docs.length)
         rep.notes.push('Không có chứng từ phù hợp bộ lọc.');
+    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện thành dòng riêng ở cuối mỗi đối tác; dòng "gồm ứng trước" là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
     rep.notes.push('Ô "Đến hạn" hiển thị — khi chưa có căn cứ hạn thanh toán; không suy từ ngày hóa đơn.');
     rep.signatures = true;
     return rep;
@@ -10015,6 +10032,9 @@ function summaryPartners_(user, req) {
     });
     var items = Object.keys(by).map(function (k) { return by[k]; }), totals = { AR: {}, AP: {} };
     items.sort(function (a, b) { return cmpStr_(a.name, b.name); });
+
+    items.forEach(function (o) { o.net = { AR: {}, AP: {} }; ['AR', 'AP'].forEach(function (dir) { var cs = {}; Object.keys(o[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(o.adv[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(cs).forEach(function (c) { var n = (o[dir][c] ? o[dir][c].out : 0) - (o.adv[dir][c] || 0); if (n)
+        o.net[dir][c] = n; }); }); });
     items.forEach(function (o) { ['AR', 'AP'].forEach(function (dir) { Object.keys(o[dir]).forEach(function (c) { var t = totals[dir][c] = totals[dir][c] || { out: 0, overdue: 0, due7: 0, missing: 0 }, x = o[dir][c]; t.out += x.out; t.overdue += x.overdue; t.due7 += x.due7; t.missing += x.missing; }); }); });
     return { meta: rmMeta_(r), items: items, totals: totals };
 }
