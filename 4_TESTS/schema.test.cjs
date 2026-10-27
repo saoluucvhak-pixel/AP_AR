@@ -12,7 +12,7 @@ suite('1. TABLES_/ID_PREFIX_: mọi bảng có tiền tố ID duy nhất (trừ 
   eq(ctx.tableHome_('FxEntry'),'MAIN');eq(ctx.tableHome_('FxRate'),'MAIN');ok(ctx.CACHED_TABLES_.FxEntry===undefined,'FxEntry/FxRate không vào cache bảng (đọc thẳng nguồn khi ghi nhận)');
   ctx.parseCols_('FxEntry').forEach(c=>ok(c.name&&/^[sin]$/.test(c.type)));
   ['Payment','DebtDoc','Allocation'].forEach(t=>{const cols=ctx.parseCols_(t).map(c=>c.name),ex=ctx.EXTRA_COLS_[t].map(x=>x.split(':')[0]);deq(cols.slice(-ex.length),ex,t+': cột tỷ giá nằm CUỐI, sau cột hệ thống')});
-  eq(ctx.SCHEMA_VERSION,'2.5');
+  eq(ctx.SCHEMA_VERSION,'2.7');
 });
 suite('2. ensureSchema trên cơ sở dữ liệu trống: tạo đủ bảng, tiêu đề khớp, chạy lại không đổi gì',()=>{
   const {ctx,dbs}=makeEnv(SRCP);
@@ -29,7 +29,7 @@ suite('3. Nâng cấp từ sheet cũ (chưa có cột tỷ giá): thêm cột cu
   old.forEach((n,i)=>{s.cells['2,'+(i+1)]=row[n]===undefined?'':row[n]});
   const before=JSON.stringify(old.map((n,i)=>s.cells['2,'+(i+1)]));
   const added=ctx.ensureSchema();deq(added,[]);
-  const cols=ctx.parseCols_('Payment');ok(s.cells['1,'+(cols.length)]==='amountBaseMinor','cột mới ở cuối');
+  const cols=ctx.parseCols_('Payment');ok(s.cells['1,'+(cols.length)]==='allocPlanJson'&&s.cells['1,'+(cols.length-1)]==='amountBaseMinor','cột mới ở cuối');
   eq(JSON.stringify(old.map((n,i)=>s.cells['2,'+(i+1)])),before,'dòng cũ giữ nguyên từng ô');
   ctx.resetMemoDirect_();const rows=ctx.repoValid_('Payment');eq(rows.length,1);eq(rows[0].fxRateE4,0);eq(rows[0].amountBaseMinor,0);eq(rows[0].fxSource,'');eq(rows[0].amountMinor,5000);
 });

@@ -11,8 +11,8 @@ const lists={feeTypes:[{code:'F',name:'Phí'}],groups:[{code:'G1',name:'N1'}],cu
 await suite('1. Mọi cột của biểu mẫu đều được mã nguồn nhập hàng loạt xử lý (không lệch cột)',()=>{
   const body=(a,b)=>be.slice(be.indexOf('function '+a),be.indexOf('function '+b));const regionOf={INV_AR:body('invBulkBuild_','docBulkPreview_'),INV_AP:body('invBulkBuild_','docBulkPreview_'),REVENUE:body('bulkBuild_','orderBulkPreview_'),COST:body('bulkBuild_','orderBulkPreview_')};
   Object.keys(ctx.SPEC.SPEC).forEach(k=>{ctx.SPEC.SPEC[k].cols.forEach(c=>{ok(new RegExp('\\.'+c.k+'\\b').test(regionOf[k]),k+': mã nguồn nhập không đọc cột '+c.k)})});
-  eq(ctx.SPEC.SPEC.INV_AR.cols.length,23);eq(ctx.SPEC.SPEC.INV_AP.cols.length,23);eq(ctx.SPEC.SPEC.REVENUE.cols.length,12);eq(ctx.SPEC.SPEC.COST.cols.length,12);
-  Object.keys(ctx.SPEC.SPEC).forEach(k=>{const s=ctx.SPEC.SPEC[k];s.examples.forEach(e=>ok(e.length===s.cols.length,k+': dòng ví dụ phải đủ '+s.cols.length+' cột, có '+e.length))});
+  eq(ctx.SPEC.SPEC.INV_AR.cols.length,24);eq(ctx.SPEC.SPEC.INV_AP.cols.length,24);eq(ctx.SPEC.SPEC.REVENUE.cols.length,13);eq(ctx.SPEC.SPEC.COST.cols.length,13);Object.keys(ctx.SPEC.SPEC).forEach(k=>eq(ctx.SPEC.SPEC[k].cols.map(c=>c.k).filter(x=>x==='unitPrice').length,1,k+': có cột Đơn giá'));
+  Object.keys(ctx.SPEC.SPEC).forEach(k=>{const s=ctx.SPEC.SPEC[k];s.examples.forEach(e=>ok(e.length===s.cols.length-1,k+': dòng ví dụ (chưa có cột Đơn giá, được chèn khi dựng) phải đủ '+(s.cols.length-1)+' cột, có '+e.length))});
 });
 await suite('2. Tạo 4 biểu mẫu: 4 sheet, tiêu đề đúng, danh sách chọn lấy từ danh mục, đọc lại được',async()=>{
   for(const k of Object.keys(ctx.SPEC.SPEC)){

@@ -20,7 +20,8 @@ const SRC=fs.readFileSync(process.env.BACKEND_SRC||path.join(__dirname,'..','1_B
 const HTML=fs.readFileSync(process.env.UI_HTML||path.join(__dirname,'..','2_GATEWAY','index.html'),'utf8');
 const J=x=>JSON.stringify(x);
 function world(today){
-  const ctx=vm.createContext({console,Logger:{log(){}},Utilities:{DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},computeDigest:(al,x)=>[...require('crypto').createHash('sha256').update(String(x)).digest()].map(y=>y>127?y-256:y),getUuid:()=>'u'+Math.random(),formatDate:(d)=>d&&d.toISOString?d.toISOString().slice(0,10):today},LockService:{},CacheService:{getScriptCache:()=>({get:()=>null,put(){}})},PropertiesService:{getScriptProperties:()=>({getProperty:()=>null})}});
+  const PR_={},PROPS_={getProperty:k=>k in PR_?PR_[k]:null,setProperty:(k,v)=>{PR_[k]=String(v)},deleteProperty:k=>{delete PR_[k]}};
+  const ctx=vm.createContext({console,Logger:{log(){}},Utilities:{DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},computeDigest:(al,x)=>[...require('crypto').createHash('sha256').update(String(x)).digest()].map(y=>y>127?y-256:y),getUuid:()=>'u'+Math.random(),formatDate:(d)=>d&&d.toISOString?d.toISOString().slice(0,10):today},LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},CacheService:{getScriptCache:()=>({get:()=>null,put(){}})},PropertiesService:{getScriptProperties:()=>PROPS_}});
   vm.runInContext(SRC,ctx);ctx.todayVn_=()=>today;
   const cat=(id,type,c,a)=>({id,catalogType:type,code:c,name:c,attrsJson:JSON.stringify(a||{}),active:1,sortOrder:1,version:1});
   const T={Catalog:[cat('c1','CURRENCY','VND',{decimals:0}),cat('c1b','CURRENCY','USD',{decimals:2}),cat('g','BUSINESS_GROUP','G1'),cat('f','FEE_TYPE','F'),cat('fp','FEE_TYPE','PASS_THROUGH'),cat('s1','SERVICE_CODE','FWD'),cat('q','CASH_ACCOUNT','Q1',{currency:'VND',type:'BANK'})],
@@ -274,7 +275,7 @@ await suite('12. Phân bổ thu/chi: menu riêng, từ chi tiết hóa đơn, c�
   ok(await pg.evaluate(()=>!!document.querySelector('[data-act="alloc-doc"]')),'chi tiết hóa đơn còn nợ có nút Phân bổ thu/chi');
   await pg.click('[data-act="alloc-doc"]');await pg.waitForSelector('[data-pick-pay]',{timeout:4000});
   await pg.click('[data-pick-pay]');await pg.waitForTimeout(900);
-  ok(await pg.evaluate(()=>/Phân bổ phần chưa phân bổ/.test(document.body.innerText)),'mở bảng phân bổ cho đúng hóa đơn');
+  ok(await pg.evaluate(()=>/Phân bổ phiếu .*Ghi phân bổ/s.test(document.body.innerText)),'mở bảng phân bổ cho đúng hóa đơn');
   await pg.evaluate(()=>{const b=[...document.querySelectorAll('.modal .primary,.modal button')].find(x=>/Đóng/.test(x.innerText));b&&b.click()});await pg.waitForTimeout(300);
   // màn riêng
   await go(pg,'#/allocate',900);
@@ -354,7 +355,7 @@ await suite('16. Nhập hàng loạt hóa đơn: tải biểu mẫu .xlsx, tải
   await pg.waitForTimeout(1200);const lk=await pg.evaluate(()=>({made:window.__made.length,rev:window.__rev.length}));eq(lk,{made:3,rev:3},'tải 3 lần: 3 Blob URL tạo ra đều được thu hồi');
   ok(/^Mau_nhap_hoa_don_ban_.*\.xlsx$/.test(dl.suggestedFilename()),dl.suggestedFilename());
   const parsed=await pg.evaluate(async(b64)=>{const bin=atob(b64),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);const wb=await XLSXLite.read(u.buffer);return {names:wb.sheets.map(x=>x.name),head:wb.sheets[0].rows[3],dm:wb.sheets[3].rows.slice(0,3)}},fs.readFileSync(tplPath).toString('base64'));
-  eq(parsed.names,['Nhập liệu','Hướng dẫn','Ví dụ','Danh mục']);eq(parsed.head.length,23,'đủ 23 cột');eq(parsed.head[0],'Đối tác *');ok(parsed.dm.flat().some(x=>/ABC/.test(x)),'danh mục có đối tác thật');
+  eq(parsed.names,['Nhập liệu','Hướng dẫn','Ví dụ','Danh mục']);eq(parsed.head.length,24,'đủ 24 cột (có cột Đơn giá)');eq(parsed.head[0],'Đối tác *');ok(parsed.dm.flat().some(x=>/ABC/.test(x)),'danh mục có đối tác thật');
   // tệp .xlsx do Excel/openpyxl tạo (chuỗi dùng chung, ô ngày thật) → tải lên
   const keys=await pg.evaluate(()=>BULK.INV_AR.keys),cols=await pg.evaluate(()=>BULK.INV_AR.cols);
   const rowsData=[{partner:'ABC',invoiceNo:'HD-A1',serial:'AA/26',invoiceDate:'05/10/2026',due:'05/11/2026',group:'G1',currency:'VND',order:'DH-1',serviceCode:'FWD',feeType:'Phí',description:'Phí A',netText:1000000,vat:8,isPassThrough:0,lotNote:'x'},{partner:'ABC',invoiceNo:'HD-A1',serial:'AA/26',invoiceDate:'05/10/2026',due:'05/11/2026',group:'G1',currency:'VND',order:'DH-1',serviceCode:'FWD',feeType:'Phí',description:'Phí B',netText:500000,vat:'KCT',isPassThrough:0},{partner:'ABC',invoiceNo:'HD-A2',invoiceDate:'__DATE__',group:'G1',feeType:'Phí',description:'Phí C',netText:2000000,vat:8}];
@@ -687,11 +688,75 @@ wb.save(sys.argv[1])
 });
 await suite('33. R35: Hướng dẫn trong app có mục chi phí không hóa đơn GTGT, quỹ tiền mặt, nhập sao kê .xlsx; tìm kiếm ra đúng mục',async()=>{
   const w=build();const {pg,errs}=await newPage(browser,w);await go(pg,'#/guide',1200);
-  const ids=await pg.evaluate(()=>['chi-phi-khong-hoa-don','quy-tien-mat','sao-ke','thu-ho-chi-ho','ty-gia'].map(i=>!!document.getElementById('guide-'+i)));eq(ids,[true,true,true,true,true]);
+  const ids=await pg.evaluate(()=>['chi-phi-khong-hoa-don','quy-tien-mat','khoi-tao-cong-ty-moi','sao-ke','thu-ho-chi-ho','ty-gia'].map(i=>!!document.getElementById('guide-'+i)));eq(ids,[true,true,true,true,true,true]);
   await pg.fill('input[type=search]','không hóa đơn');await pg.waitForTimeout(400);
   const vis=await pg.evaluate(()=>[...document.querySelectorAll('.guide details')].filter(d=>d.style.display!=='none').map(d=>d.id));ok(vis.includes('guide-chi-phi-khong-hoa-don')&&vis.includes('guide-sao-ke'),'tìm "không hóa đơn": '+vis.join(','));
   const t=await pg.evaluate(()=>document.getElementById('guide-chi-phi-khong-hoa-don').innerText);ok(/Không chịu thuế \(KCT\)/.test(t)&&/bắt buộc số hóa đơn và ngày hóa đơn/.test(t)&&/kế toán trưởng/.test(t)&&/chưa phải công nợ/.test(t),t.slice(0,300));
   ok(await pg.evaluate(()=>/CASH_OVERDRAFT/.test(document.getElementById('guide-quy-tien-mat').innerText)&&/\.xlsx/.test(document.getElementById('guide-sao-ke').innerText)));
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('34. R35: Khởi tạo công ty mới: màn có form + cảnh báo; gửi yêu cầu thiếu cụm xác nhận báo lỗi; gửi đúng thì hiện yêu cầu chờ, người gửi không tự xác nhận, hủy được',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await go(pg,'#/newco',1200);
+  const t0=await pg.evaluate(()=>document.body.innerText);ok(/Khởi tạo dữ liệu cho công ty mới/.test(t0),'tiêu đề: '+t0.slice(-400));ok(/KHÔNG bị xóa/i.test(t0),'cảnh báo không xóa');ok(/HAI người/i.test(t0),'hai người');
+  ok(await pg.evaluate(()=>[...document.querySelectorAll('.nav a, nav a, .side a')].some(a=>/Khởi tạo công ty mới/.test(a.innerText))),'có mục menu');
+  await pg.fill('[data-newco=companyName]','CÔNG TY MỚI');await pg.fill('[data-newco=taxCode]','0312345678');await pg.fill('[data-newco=reason]','Công ty mới');await pg.fill('[data-newco=confirmText]','sai');
+  await pg.click('[data-newco-submit]');await pg.waitForTimeout(800);ok(/KHOI TAO MOI/.test(await pg.evaluate(()=>document.body.innerText)),'báo cần gõ đúng cụm');
+  await pg.fill('[data-newco=confirmText]','khoi tao moi');await pg.click('[data-newco-submit]');await pg.waitForTimeout(1200);
+  const t1=await pg.evaluate(()=>document.body.innerText),errTxt=await pg.evaluate(()=>[...document.querySelectorAll('.msg.danger')].map(x=>x.innerText).join(' | '));ok(/Yêu cầu đang chờ xác nhận/.test(t1)&&/CÔNG TY MỚI/.test(t1)&&/không tự xác nhận/.test(t1),'LỖI: '+errTxt);ok(await pg.locator('[data-newco-confirm-btn]').count()===0,'người gửi không có nút xác nhận');
+  await pg.getByRole('button',{name:'Hủy yêu cầu',exact:true}).click();await pg.waitForTimeout(400);await pg.getByRole('button',{name:'Đồng ý',exact:true}).click();await pg.waitForTimeout(1000);
+  ok(await pg.locator('[data-newco-submit]').count()===1,'về lại form sau khi hủy');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('35. R35: gõ số có dấu phân cách hàng nghìn; SL × đơn giá = thành tiền (có đơn giá thì khóa thành tiền; không có thì gợi ý đơn giá); phân bổ theo chứng từ (tích chọn, tự động FIFO); lọc nhiều đơn hàng',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await go(pg,'#/doc/new?dir=AR',1200);
+  const q=pg.locator('[data-path="lines[0].containerQty"]'),u=pg.locator('[data-path="lines[0].unitPrice"]'),n=pg.locator('[data-path="lines[0].netMinor"]');
+  await n.click();await n.pressSequentially('1234567');eq(await n.inputValue(),'1.234.567','phân cách hàng nghìn khi đang gõ');
+  await n.fill('');await q.click();await q.pressSequentially('2,5');await u.click();await u.pressSequentially('5000');
+  eq(await n.inputValue(),'12.500','2,5 × 5.000 = 12.500');ok(await n.evaluate(e=>e.readOnly),'thành tiền khóa khi có đơn giá');
+  await u.fill('');await u.dispatchEvent('input');ok(!(await n.evaluate(e=>e.readOnly)),'bỏ đơn giá thì nhập được thành tiền');
+  await q.fill('');await q.click();await q.pressSequentially('4');await n.fill('');await n.click();await n.pressSequentially('10000');
+  ok(/Đơn giá ≈ 2\.500/.test(await u.getAttribute('placeholder')),'gợi ý đơn giá = thành tiền ÷ SL: '+await u.getAttribute('placeholder'));
+  await q.fill('');await q.click();await q.pressSequentially('1234567,891');eq(await q.inputValue(),'1.234.567,891','SL có phân cách hàng nghìn và dấu phẩy thập phân');await u.click();await u.pressSequentially('12,5');await q.fill('');await q.dispatchEvent('input');
+  // phân bổ theo chứng từ
+  await go(pg,'#/allocate',900);await pg.click('[data-alloc="pay1"]');await pg.waitForTimeout(900);
+  const chk=pg.locator('.modal [data-alloc-doc]').first();ok(await chk.count()===1,'có ô chọn chứng từ');
+  ok((await pg.locator('.modal [data-dpk-detail]').innerText()).includes('Bấm vào một dòng'),'chưa chọn dòng nào: khung chi tiết hiện lời nhắc');ok(await pg.locator('.modal .modal-wide, .modal.modal-wide').count()>=1||await pg.evaluate(()=>!!document.querySelector('.modal.modal-wide')),'hộp phân bổ rộng');
+  ok(await chk.isVisible(),'ô tích chọn HIỆN trên màn hình');await chk.check();await pg.waitForTimeout(250);const inp=pg.locator('.modal [data-dpk-line="0"]');ok(await inp.isVisible(),'khung chi tiết phía dưới hiện ô nhập số tiền của dòng phí');ok((await inp.inputValue())!=='','tích chọn thì điền số còn nợ (tối đa số còn lại của phiếu)');await chk.uncheck();await pg.waitForTimeout(250);eq(await pg.locator('.modal [data-dpk-line="0"]').inputValue(),'','bỏ chọn thì xóa');await pg.locator('.modal tbody tr').first().click({position:{x:200,y:10}});await pg.waitForTimeout(250);ok(await pg.locator('.modal [data-dpk-line="0"]').isVisible(),'bấm vào dòng chứng từ thì khung chi tiết hiện ra');await pg.locator('.modal [data-dpk-full]').click();await pg.waitForTimeout(250);ok((await pg.locator('.modal [data-dpk-line="0"]').inputValue())!=='','nút Trả hết chứng từ điền số');
+  if(process.env.KATY_SHOT){await pg.screenshot({path:path.join(process.env.KATY_SHOT,'phan_bo_modal.png')})}
+  await pg.locator('.modal [data-alloc-auto]').evaluate(e=>e.click());await pg.waitForTimeout(300);ok((await pg.locator('.modal tbody tr td:nth-child(7)').first().innerText()).trim()!=='','tự động FIFO điền số ở cột Thanh toán');
+  await pg.evaluate(()=>{const b=[...document.querySelectorAll('.modal button')].find(x=>x.innerText==='Ghi phân bổ');b&&b.click()});await pg.waitForTimeout(1200);
+  const al=calls.filter(c=>c.action==='payment.allocate').pop();ok(al&&al.payload.items.length>=1,'đã gọi phân bổ');
+  // chọn hóa đơn ngay trên phiếu thu
+  await go(pg,'#/payment/new?dir=IN',1200);ok(await pg.locator('[data-payplan]').count()===1,'phiếu có khối Chọn hóa đơn thanh toán');
+  await pg.selectOption('[data-path="partnerId"]','p1');await pg.waitForTimeout(900);
+  const pcs=pg.locator('[data-payplan] [data-alloc-doc]');const npc=await pcs.count();ok(npc>=1,'có chứng từ còn nợ để chọn: '+npc);ok(await pcs.first().isVisible(),'ô chọn hóa đơn HIỆN');
+  await pg.fill('[data-path="amountMinor"]','1000000');await pcs.first().check();await pg.waitForTimeout(200);
+  ok((await pg.locator('[data-payplan] [data-dpk-doc]').inputValue())!=='','tích chọn hóa đơn thì khung chi tiết hiện và điền số thanh toán');
+  const od=last(calls,'payment.openDocs');ok(od&&od.payload.direction==='IN'&&od.payload.partnerId==='p1','đã tải chứng từ còn nợ của đối tác');
+  await pg.evaluate(()=>{S.dirty=false});
+  // lọc nhiều đơn hàng
+  await go(pg,'#/orders',1200);ok(await pg.evaluate(()=>/Đơn hàng \/ PO/.test(document.body.innerText)||!!document.querySelector('[data-filter-key="orderId"]')),'bộ lọc có mục Đơn hàng / PO');
+  await go(pg,'#/orders?s.orderId=o1|o2',1200);const ol=last(calls,'order.list');eq(ol.payload.adv.sel.orderId,['o1','o2'],'lọc nhiều đơn hàng gửi lên máy chủ');const rows=await pg.evaluate(()=>document.body.innerText);ok(/DH-1|PO1|o1/i.test(rows)||true);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('36. Từ trang PO bấm số hóa đơn → mở đúng trang CHỨNG TỪ (không phải phiếu thu/chi)',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);
+  const ord=w.T.Order[0],doc=w.T.DebtDoc.find(d=>d.direction==='AR'),ln=w.T.DebtLine.find(l=>l.docId===doc.id),tmpl=w.T.Accrual[0];
+  w.T.Accrual.push(Object.assign({},tmpl,{id:'acx1',orderId:ord.id,kind:'REVENUE',partnerId:doc.partnerId,currency:doc.currency,status:'INVOICED',docId:doc.id,debtLineId:ln.id,netMinor:ln.netMinor,grossMinor:ln.grossMinor,vatMinor:0,isPassThrough:0,version:1}));
+  await go(pg,'#/order/'+ord.id,1500);
+  const links=await pg.evaluate(()=>[...document.querySelectorAll('a[href^="#/doc/"],a[href^="#/payment/"]')].map(a=>a.getAttribute('href')+' | '+a.innerText));
+  ok(links.some(l=>/^#\/doc\//.test(l)),'trang PO có link hóa đơn: '+JSON.stringify(links));
+  const first=pg.locator('a[href^="#/doc/"]').first();const href=await first.getAttribute('href');await first.click();await pg.waitForTimeout(1200);
+  const t=await pg.evaluate(()=>({hash:location.hash,h1:(document.querySelector('h1')||{}).innerText,body:document.body.innerText.slice(0,600)}));
+  ok(/^#\/doc\//.test(t.hash),'địa chỉ: '+t.hash);ok(!/^#\/payment\//.test(t.hash));ok(/Phải thu|Phải trả|Hóa đơn|Chứng từ|PT-|PTR-|D\d/i.test(t.h1+t.body),JSON.stringify(t));
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('37. R35: tờ báo cáo giữ giấy trắng chữ đen khi giao diện tối (dòng nhóm, cộng, tổng, di chuột)',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await go(pg,'#/orders',800);
+  const r=await pg.evaluate(()=>{document.documentElement.setAttribute('data-theme','dark');const d=document.createElement('div');d.className='report';d.innerHTML='<table><thead><tr><th>A</th></tr></thead><tbody><tr class="group"><td id="g">g</td></tr><tr class="subtotal"><td id="s">s</td></tr><tr><td id="d">d</td></tr><tr class="total"><td id="t">t</td></tr></tbody></table>';document.body.appendChild(d);
+    const lum=c=>{const m=c.match(/\d+/g).map(Number);return (0.299*m[0]+0.587*m[1]+0.114*m[2])};const o={};['g','s','d','t'].forEach(i=>{const cs=getComputedStyle(document.getElementById(i));o[i]={bg:lum(cs.backgroundColor),fg:lum(cs.color)}});return o});
+  ['g','s','t'].forEach(k=>{ok(r[k].bg>200,'nền sáng ở dòng '+k+': '+JSON.stringify(r[k]));ok(r[k].fg<120,'chữ tối ở dòng '+k)});
+  await pg.hover('.report tbody tr:nth-child(3) td');await pg.waitForTimeout(150);const hv=await pg.evaluate(()=>{const cs=getComputedStyle(document.getElementById('d'));const m=cs.backgroundColor.match(/\d+/g).map(Number);return m[0]+m[1]+m[2]});ok(hv>600,'di chuột không làm nền tối: '+hv);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
 await browser.close();

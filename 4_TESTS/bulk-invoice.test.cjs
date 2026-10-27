@@ -120,3 +120,15 @@ suite('11. Một hóa đơn nhiều mã dịch vụ (dòng khác mã dịch vụ
   const bad=call(w,'docBulkPreview_',U,{direction:'AR',rows:[row({order:'DH-1',serviceCode:'',description:'x'})]});ok(bad.rows[0].issues.some(i=>/SERVICE_CODE/.test(i.code)),'PO nhiều mã dịch vụ mà để trống thì báo phải chọn');
 });
 console.log('Kiểm thử nhập hàng loạt hóa đơn:',steps,'khẳng định');
+suite('R35. Nhập hàng loạt hóa đơn bán / mua có SL × đơn giá: để trống thành tiền thì tự tính; nhập cả hai phải khớp; đơn giá thiếu SL bị chặn; ghi lại SL + đơn giá vào dòng phí',()=>{
+  for(const dir of ['AR','AP']){
+    const w=fresh(),b=o=>row(Object.assign({partner:'ABC',vat:'KCT'},o));
+    const pv=call(w,'docBulkPreview_',U,{direction:dir,rows:[b({containerQty:'2,5',unitPrice:'5.000',netText:''})]});eq(pv.errors,0,J(pv.rows.map(r=>r.issues)));eq(pv.totals.VND,12500,dir+': 2,5 × 5.000 = 12.500');
+    eq(call(w,'docBulkPreview_',U,{direction:dir,rows:[b({containerQty:'2,5',unitPrice:'5.000',netText:'12.500'})]}).errors,0,'nhập cả hai và khớp');
+    const bad=call(w,'docBulkPreview_',U,{direction:dir,rows:[b({containerQty:'2,5',unitPrice:'5.000',netText:'12.499'})]});eq(bad.errors,1);ok(bad.rows[0].issues.some(i=>i.code==='NET_MISMATCH'),J(bad.rows[0].issues));
+    const nq=call(w,'docBulkPreview_',U,{direction:dir,rows:[b({unitPrice:'5.000',netText:''})]});ok(nq.errors>=1,'đơn giá không có SL');
+    eq(call(w,'docBulkPreview_',U,{direction:dir,rows:[b({containerQty:'4',unitPrice:'',netText:'10.000'})]}).errors,0,'có SL không đơn giá: nhập thành tiền');
+    call(w,'docBulkCommit_',U,{direction:dir,rows:[b({containerQty:'2,5',unitPrice:'5.000',netText:''})],batchLabel:'T'});
+    const ln=w.T.DebtLine[0];eq(ln.containerQty,2.5);eq(ln.unitPrice,5000);eq(ln.netMinor,12500);
+  }
+});

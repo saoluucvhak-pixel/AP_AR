@@ -1,4 +1,4 @@
-var SCHEMA_VERSION = '2.5';
+var SCHEMA_VERSION = '2.7';
 var SYS_COLS_ = ['createdAt:s', 'createdBy:s', 'updatedAt:s', 'updatedBy:s', 'version:i', 'isDeleted:i', 'commitState:s', 'txId:s'];
 var TABLES_ = {
     Partner: ['id:s', 'partnerNo:s', 'legalName:s', 'shortName:s', 'taxCode:s', 'isCustomer:i', 'isSupplier:i', 'paymentTermDays:n',
@@ -52,7 +52,7 @@ var TABLES_ = {
 };
 var NOSYS_ = { SysTx: 1, AuditLog: 1 };
 // Cột bổ sung SAU cột hệ thống (để không làm lệch dữ liệu cũ); ensureSchema() tự thêm tiêu đề còn thiếu.
-var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
+var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s', 'unitPrice:n'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s', 'unitPrice:n'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i', 'allocPlanJson:s'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
 var ID_PREFIX_ = { Partner: 'par', ServiceFile: 'sf', ShipmentRef: 'shr', DebtDoc: 'doc', DebtLine: 'dln', Payment: 'pay', Allocation: 'alc',
     OpeningBalance: 'opb', AppUser: 'usr', Catalog: 'cat', ImportBatch: 'bat', ImportRow: 'imr', BackupCatalog: 'bkp',
     ReportSnapshot: 'rpt', ReadModel: 'rdm', Order: 'odr', Accrual: 'acr', AccrualSplit: 'acs', Followup: 'flu', FxRate: 'fxr', FxEntry: 'fxe', PassLink: 'pls', CashTransfer: 'cxf', CashExchange: 'cex', BankRecon: 'brc', CashCount: 'ckk', SysTx: 'tx', AuditLog: 'aud' };
@@ -1410,6 +1410,200 @@ function backupRollbackSwitchLocked_(user, req) {
     writeAudit_(user, '', '', [{ entityType: 'Backup', entityId: '', action: 'backup.rollbackSwitch', diff: { to: prev, reason: maxStr_(req.payload.reason, 300) } }]);
     return { ok: true, nowUsing: prev };
 }
+// ===== Khởi tạo DỮ LIỆU MỚI cho công ty mới (R3.5) =====
+// KHÔNG xóa dữ liệu cũ: tạo bộ Google Sheets MỚI (trống, đúng schema), chép sang: người dùng + quyền, danh mục (trừ tài khoản quỹ), danh sách bản sao lưu, cấu hình chung;
+// đặt tên/MST/ngày đầu sổ của công ty mới rồi CHUYỂN sang bộ mới. Bộ cũ giữ nguyên trong Drive và quay lại được (company.initRollback). Nhật ký kiểm toán dùng chung (có ghi sự kiện).
+// Hai người: một người yêu cầu (gõ cụm xác nhận), người thứ hai có vai trò Kế toán trưởng/Người duyệt xác nhận. Trước khi chuyển luôn sao lưu PRE_INIT.
+var INIT_PHRASE_ = 'khoi tao moi';
+var INIT_CFG_SKIP_ = /^(seq\.|entity\.|ledgerStartDate$)/;
+function companyInitState_() { return safeJson_(props_().getProperty('INIT_REQUEST'), null); }
+function companyInitOut_(c) { return c ? { requestedBy: c.requestedByEmail, at: c.at, companyName: c.companyName, shortName: c.shortName, taxCode: c.taxCode, ledgerStartDate: c.ledgerStartDate, keepCatalog: c.keepCatalog, reason: c.reason } : null; }
+function companyInitStatus_(user, req) {
+    requirePerm_(user, 'backup.restore');
+    var prev = safeJson_(props_().getProperty('INIT_PREV'), null);
+    return { pending: companyInitOut_(companyInitState_()), canRollback: !!prev, previous: prev ? { at: prev.at, by: prev.byEmail, companyName: prev.companyName } : null, maintenance: props_().getProperty('MAINTENANCE') === '1', phrase: 'KHOI TAO MOI' };
+}
+function companyInitRequest_(user, req) {
+    requirePerm_(user, 'backup.restore');
+    var p = req.payload || {}, errs = [];
+    if (!String(p.companyName || '').trim())
+        errs.push({ path: 'companyName', code: 'REQUIRED', message: 'Nhập tên công ty mới.' });
+    if (!isDate_(p.ledgerStartDate))
+        errs.push({ path: 'ledgerStartDate', code: 'DATE_INVALID', message: 'Nhập ngày đầu sổ hợp lệ (yyyy-MM-dd).' });
+    if (!String(p.reason || '').trim())
+        errs.push({ path: 'reason', code: 'REQUIRED', message: 'Nhập lý do khởi tạo.' });
+    if (normText_(p.confirmText || '') !== INIT_PHRASE_)
+        errs.push({ path: 'confirmText', code: 'CONFIRM_TEXT', message: 'Gõ đúng cụm "KHOI TAO MOI" để xác nhận.' });
+    if (errs.length)
+        throw err_('VALIDATION_FAILED', 'Chưa đủ thông tin để khởi tạo dữ liệu mới.', errs);
+    return withLock_(30000, function () {
+        if (props_().getProperty('MAINTENANCE') === '1' || props_().getProperty('RESTORE_CANDIDATE'))
+            throw err_('STATE_TRANSITION_INVALID', 'Hệ thống đang bảo trì hoặc có yêu cầu khôi phục chờ xác nhận.');
+        if (companyInitState_())
+            throw err_('STATE_TRANSITION_INVALID', 'Đã có yêu cầu khởi tạo đang chờ xác nhận. Hủy yêu cầu cũ trước.');
+        var c = { requestedBy: user.id, requestedByEmail: user.email, at: nowIso_(), companyName: maxStr_(String(p.companyName).trim(), 200), shortName: maxStr_(String(p.shortName || '').trim(), 60), taxCode: maxStr_(String(p.taxCode || '').trim(), 20), ledgerStartDate: p.ledgerStartDate, keepCatalog: p.keepCatalog !== false, reason: maxStr_(String(p.reason).trim(), 300) };
+        props_().setProperty('INIT_REQUEST', JSON.stringify(c));
+        writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.initRequest', diff: { companyName: c.companyName, ledgerStartDate: c.ledgerStartDate, keepCatalog: c.keepCatalog, reason: c.reason } }]);
+        return { ok: true, pending: companyInitOut_(c), nextStep: 'Người thứ hai (Kế toán trưởng/Người duyệt, khác người yêu cầu) gọi company.initConfirm.' };
+    });
+}
+function companyInitCancel_(user, req) {
+    requirePerm_(user, 'backup.restore');
+    return withLock_(30000, function () {
+        if (!companyInitState_())
+            throw err_('STATE_TRANSITION_INVALID', 'Không có yêu cầu khởi tạo nào đang chờ.');
+        props_().deleteProperty('INIT_REQUEST');
+        writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.initCancel', diff: null }]);
+        return { ok: true };
+    });
+}
+// Dựng bộ Sheets mới (không đụng DB đang dùng). Trả {mainId, draftId, copied}.
+function companyInitBuild_(c) {
+    var ts = Utilities.formatDate(new Date(), 'Asia/Ho_Chi_Minh', 'yyyyMMdd-HHmmss'), oldMain = openDb_('MAIN'), hasDraft = !!props_().getProperty('DB_DRAFT_ID'), oldDraft = hasDraft ? openDb_('DRAFT') : null;
+    var main = SpreadsheetApp.create('CONGNO_DB_MAIN_' + ts), draft = hasDraft ? SpreadsheetApp.create('CONGNO_DB_DRAFT_' + ts) : null, made = { mainId: main.getId(), draftId: draft ? draft.getId() : '', copied: {} };
+    try {
+        Object.keys(TABLES_).forEach(function (t) {
+            var home = tableHome_(t);
+            if (home === 'AUDIT')
+                return;
+            var dst = home === 'DRAFT' ? draft : main, src = (home === 'DRAFT' ? oldDraft : oldMain).getSheetByName(t), cols = parseCols_(t), s = dst.insertSheet(t);
+            s.getRange(1, 1, 1, cols.length).setValues([cols.map(function (x) { return x.name; })]);
+            s.setFrozenRows(1);
+            cols.forEach(function (x, i) { s.getRange(1, i + 1, s.getMaxRows(), 1).setNumberFormat(x.type === 's' ? '@' : '0'); });
+            var keep = t === 'AppUser' || t === 'BackupCatalog' ? function () { return true; } : t === 'Catalog' ? function (o) { return c.keepCatalog && o.catalogType !== 'CASH_ACCOUNT'; } : t === 'Config' ? function (o) { return !INIT_CFG_SKIP_.test(String(o.id)); } : null;
+            if (!keep || !src || src.getLastRow() < 2)
+                return;
+            var vals = src.getRange(1, 1, src.getLastRow(), cols.length).getValues(), head = vals[0].map(function (x) { return String(x).trim(); }), idx = {}, rows = [];
+            head.forEach(function (n, i) { idx[n] = i; });
+            for (var r = 1; r < vals.length; r++) {
+                var o = {};
+                head.forEach(function (n, i) { o[n] = vals[r][i]; });
+                if (keep(o))
+                    rows.push(cols.map(function (x) { return idx[x.name] === undefined || vals[r][idx[x.name]] === undefined ? '' : vals[r][idx[x.name]]; }));
+            }
+            if (rows.length) {
+                s.getRange(2, 1, rows.length, cols.length).setValues(rows);
+                made.copied[t] = rows.length;
+            }
+        });
+        [main, draft].forEach(function (ss) { if (ss) {
+            var d = ss.getSheetByName('Sheet1') || ss.getSheetByName('Trang tính1');
+            if (d && ss.getSheets().length > 1)
+                ss.deleteSheet(d);
+        } });
+    }
+    catch (e) {
+        companyInitTrash_(made);
+        throw e;
+    }
+    return made;
+}
+function companyInitTrash_(made) { try {
+    [made.mainId, made.draftId].forEach(function (id) { if (id)
+        DriveApp.getFileById(id).setTrashed(true); });
+}
+catch (e) {
+    console.error('INIT_TRASH_FAIL ' + e);
+} }
+function companyInitConfirm_(user, req) {
+    requirePerm_(user, 'backup.restore');
+    if (user.role !== 'APPROVER')
+        throw err_('FORBIDDEN', 'Chỉ Kế toán trưởng/người duyệt được xác nhận khởi tạo dữ liệu mới.');
+    var p = req.payload || {};
+    if (normText_(p.confirmText || '') !== INIT_PHRASE_)
+        throw err_('VALIDATION_FAILED', 'Gõ đúng cụm "KHOI TAO MOI" để xác nhận.', [{ path: 'confirmText', code: 'CONFIRM_TEXT', message: 'Gõ đúng cụm "KHOI TAO MOI".' }]);
+    var c = null;
+    withLock_(30000, function () {
+        c = companyInitState_();
+        if (!c)
+            throw err_('STATE_TRANSITION_INVALID', 'Không có yêu cầu khởi tạo nào đang chờ.');
+        if (c.requestedBy === user.id)
+            throw err_('SELF_APPROVAL_FORBIDDEN', 'Cần người thứ hai xác nhận khởi tạo dữ liệu mới.');
+        if (props_().getProperty('MAINTENANCE') === '1' || props_().getProperty('RESTORE_CANDIDATE'))
+            throw err_('STATE_TRANSITION_INVALID', 'Hệ thống đang bảo trì hoặc có yêu cầu khôi phục chờ xác nhận.');
+        props_().setProperty('MAINTENANCE', '1');
+    });
+    var made = null, pre = null;
+    try {
+        pre = doBackup_(user, 'PRE_INIT', 'Trước khi khởi tạo dữ liệu công ty mới: ' + c.companyName);
+        made = companyInitBuild_(c);
+        return withLock_(30000, function () { return companyInitSwitch_(user, c, made, pre); });
+    }
+    catch (e) {
+        if (made && props_().getProperty('DB_MAIN_ID') !== made.mainId)
+            companyInitTrash_(made);
+        try {
+            withLock_(30000, function () { if (!props_().getProperty('RESTORE_CANDIDATE'))
+                props_().deleteProperty('MAINTENANCE'); });
+        }
+        catch (e2) {
+            console.error('INIT_CLEANUP_FAIL ' + e2);
+        }
+        throw e;
+    }
+}
+function companyInitSwitch_(user, c, made, pre) {
+    var p = props_(), old = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '', tx: p.getProperty('OPEN_TX') };
+    function setIds_(mainId, draftId) { p.setProperty('DB_MAIN_ID', mainId); if (draftId)
+        p.setProperty('DB_DRAFT_ID', draftId); }
+    function revert_() { setIds_(old.main, old.draft); if (old.tx !== null && old.tx !== undefined)
+        p.setProperty('OPEN_TX', old.tx); HDR_OK_ = {}; bumpDataVersion_(); resetMemo_(); rmInvalidate_(); }
+    setIds_(made.mainId, made.draftId);
+    p.setProperty('OPEN_TX', '{}');
+    bumpDataVersion_();
+    resetMemo_();
+    rmInvalidate_();
+    try {
+        HDR_OK_ = {};
+        var bad = schemaProblems_();
+        if (bad.length)
+            throw new Error('Schema lệch: ' + bad.slice(0, 3).join('; '));
+        var now = nowIso_(), sys = { createdAt: now, createdBy: user.id, updatedAt: now, updatedBy: user.id, version: 1, isDeleted: 0, commitState: 'C', txId: '' };
+        repoAppend_('Config', [['ledgerStartDate', c.ledgerStartDate], ['entity.name', c.companyName], ['entity.shortName', c.shortName], ['entity.taxCode', c.taxCode]].map(function (kv) { return Object.assign({ id: kv[0], value: kv[1] }, sys); }));
+        seedDefaults_();
+        resetMemo_();
+        if (!repoValid_('AppUser').some(function (u) { return u.id === user.id; }))
+            throw new Error('Người xác nhận không còn trong danh sách người dùng của bộ dữ liệu mới.');
+    }
+    catch (e) {
+        revert_();
+        companyInitTrash_(made);
+        alertAdmin_('Khởi tạo dữ liệu mới thất bại – đã quay lại DB cũ', String(e && (e.userMessage || e.message) || e));
+        throw err_('INIT_FAILED', 'Khởi tạo thất bại, đã tự quay lại dữ liệu cũ: ' + String(e && (e.userMessage || e.message) || e).slice(0, 200));
+    }
+    p.setProperty('INIT_PREV', JSON.stringify({ main: old.main, draft: old.draft, at: nowIso_(), byEmail: user.email, companyName: maxStr_(cfgGet_('entity.name', ''), 200) || c.companyName, preBackup: pre && pre.id || '' }));
+    p.deleteProperty('INIT_REQUEST');
+    p.deleteProperty('MAINTENANCE');
+    writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.init', diff: { companyName: c.companyName, ledgerStartDate: c.ledgerStartDate, keepCatalog: c.keepCatalog, from: old.main, to: made.mainId, preBackup: pre && pre.id || '', copied: made.copied } }]);
+    alertAdmin_('Đã khởi tạo dữ liệu mới', 'Công ty mới: ' + c.companyName + ' · bởi ' + user.email + ' · dữ liệu cũ giữ nguyên (quay lại bằng company.initRollback).');
+    return { ok: true, companyName: c.companyName, ledgerStartDate: c.ledgerStartDate, copied: made.copied, previousMain: old.main, preBackup: pre && pre.id || '', note: 'Dữ liệu cũ giữ nguyên trong Drive. Hãy đăng nhập lại / tải lại trang. Nhập tài khoản quỹ, đối tác, số dư đầu kỳ cho công ty mới.' };
+}
+function companyInitRollback_(user, req) {
+    requirePerm_(user, 'backup.restore');
+    if (user.role !== 'APPROVER')
+        throw err_('FORBIDDEN', 'Chỉ Kế toán trưởng/người duyệt được quay lại dữ liệu trước khi khởi tạo.');
+    if (!String((req.payload || {}).reason || '').trim())
+        throw err_('VALIDATION_FAILED', 'Nhập lý do quay lại.', [{ path: 'reason', code: 'REQUIRED', message: 'Nhập lý do.' }]);
+    return withLock_(30000, function () {
+        var p = props_(), prev = safeJson_(p.getProperty('INIT_PREV'), null);
+        if (!prev)
+            throw err_('STATE_TRANSITION_INVALID', 'Không có bộ dữ liệu trước đó để quay lại.');
+        if (p.getProperty('MAINTENANCE') === '1' || p.getProperty('RESTORE_CANDIDATE'))
+            throw err_('STATE_TRANSITION_INVALID', 'Đang bảo trì hoặc có yêu cầu khôi phục; hủy trước khi quay lại.');
+        var cur = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '' };
+        p.setProperty('DB_MAIN_ID', prev.main);
+        if (prev.draft)
+            p.setProperty('DB_DRAFT_ID', prev.draft);
+        p.setProperty('INIT_PREV', JSON.stringify({ main: cur.main, draft: cur.draft, at: nowIso_(), byEmail: user.email, companyName: prev.companyName, preBackup: '' }));
+        p.setProperty('OPEN_TX', '{}');
+        HDR_OK_ = {};
+        bumpDataVersion_();
+        resetMemo_();
+        rmInvalidate_();
+        writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.initRollback', diff: { to: prev.main, reason: maxStr_(req.payload.reason, 300) } }]);
+        return { ok: true, nowUsing: prev.main };
+    });
+}
 function backupCancelRestore_(user, req) {
     requirePerm_(user, 'backup.restore');
     return withLock_(30000, function () { return backupCancelRestoreLocked_(user, req); });
@@ -1607,7 +1801,38 @@ function suggestMatch(row, cands) {
 var DOC_TYPES_NEW_ = ['INVOICE', 'DEBIT_NOTE', 'VENDOR_STATEMENT'];
 var VAT_MODES_ = ['NONE', 'EXCLUSIVE', 'UNCONFIRMED'];
 var DUE_SOURCES_ = ['NONE', 'CONTRACT', 'PARTNER_TERM', 'MANUAL'];
-function calcLine_(l, idx, allowNegative) {
+// R35: SL (số lượng, tối đa 3 số lẻ; lưu ở cột containerQty cho tương thích dữ liệu cũ) × đơn giá (tối đa 4 số lẻ, đơn vị chính của tiền tệ) = thành tiền. Tính bằng BigInt, làm tròn half-up.
+function decStr_(n) { var t = String(n); return /e/i.test(t) ? '' : t; }
+function scaledInt_(n, scale) { var t = decStr_(n), m = /^(\d+)(?:\.(\d+))?$/.exec(t); if (!m || (m[2] || '').length > scale)
+    return null; return BigInt(m[1] + ((m[2] || '') + '0000000000').slice(0, scale)); }
+function mulQtyPrice_(qty, price, dec) {
+    var q = scaledInt_(qty, 3), u = scaledInt_(price, 4);
+    if (q === null || u === null)
+        return null;
+    var den = BigInt(10000000), num = q * u * BigInt(Math.pow(10, dec));
+    return Number((num * BigInt(2) + den) / (den * BigInt(2)));
+}
+// Đọc số thập phân từ ô nhập hàng loạt: "2,5", "1.234,5678", "5000", "12.5" (dấu chấm đơn + 1–2 số lẻ coi là thập phân). null = trống; NaN = sai.
+function parseDecText_(s, maxDec) {
+    s = String(s === undefined || s === null ? '' : s).replace(/\s/g, '');
+    if (!s)
+        return null;
+    var ip, fp = '', cm = s.indexOf(',');
+    if (cm >= 0) {
+        ip = s.slice(0, cm).replace(/\./g, '');
+        fp = s.slice(cm + 1);
+    }
+    else if (/^\d+\.\d{1,4}$/.test(s) && s.split('.')[1].length <= maxDec && s.split('.')[1].length !== 3) {
+        ip = s.split('.')[0];
+        fp = s.split('.')[1];
+    }
+    else
+        ip = s.replace(/\./g, '');
+    if (!/^\d+$/.test(ip) || (fp !== '' && !/^\d+$/.test(fp)) || fp.length > maxDec)
+        return NaN;
+    return Number(ip + (fp ? '.' + fp : ''));
+}
+function calcLine_(l, idx, allowNegative, cur) {
     var errs = [], p = 'lines[' + idx + ']';
     var net = l.netMinor;
     if (!Number.isSafeInteger(net))
@@ -1632,9 +1857,18 @@ function calcLine_(l, idx, allowNegative) {
                 vat = vatMinor(net, rate);
         }
     }
-    var cq = l.containerQty;
-    if (cq !== null && cq !== undefined && cq !== '' && (!Number.isInteger(cq) || cq < 0))
-        errs.push({ path: p + '.containerQty', code: 'QTY_INVALID', message: 'Số container phải là số nguyên ≥ 0 hoặc để trống.' });
+    var cq = l.containerQty, up = l.unitPrice, hasQ = cq !== null && cq !== undefined && cq !== '', hasU = up !== null && up !== undefined && up !== '';
+    if (hasQ && (typeof cq !== 'number' || !isFinite(cq) || cq < 0 || scaledInt_(cq, 3) === null))
+        errs.push({ path: p + '.containerQty', code: 'QTY_INVALID', message: 'Số lượng phải là số ≥ 0, tối đa 3 số lẻ, hoặc để trống.' });
+    if (hasU && (typeof up !== 'number' || !isFinite(up) || up < 0 || scaledInt_(up, 4) === null))
+        errs.push({ path: p + '.unitPrice', code: 'UNIT_PRICE_INVALID', message: 'Đơn giá phải là số ≥ 0, tối đa 4 số lẻ, hoặc để trống.' });
+    else if (hasU && !hasQ)
+        errs.push({ path: p + '.unitPrice', code: 'UNIT_PRICE_NEEDS_QTY', message: 'Có đơn giá thì phải nhập số lượng.' });
+    else if (hasU && hasQ && cur && Number.isSafeInteger(net) && !errs.some(function (e) { return e.path === p + '.containerQty'; })) {
+        var expect = mulQtyPrice_(cq, up, (currencyMap_()[cur] || { decimals: 0 }).decimals);
+        if (expect === null || expect !== net)
+            errs.push({ path: p + '.netMinor', code: 'NET_MISMATCH', message: 'Thành tiền phải bằng số lượng × đơn giá' + (expect === null ? '' : ' (= ' + fmtMoney_(expect, cur) + ')') + '.' });
+    }
     if (!String(l.description || '').trim())
         errs.push({ path: p + '.description', code: 'REQUIRED', message: 'Nhập diễn giải.' });
     if (String(l.description || '').length > 1000)
@@ -1644,7 +1878,7 @@ function calcLine_(l, idx, allowNegative) {
     var gross = Number.isSafeInteger(net) ? net + vat : 0;
     return { errors: errs, line: {
             lineNo: idx + 1, feeTypeCode: l.feeTypeCode || '', description: maxStr_(l.description, 1000), serviceFileId: '', serviceCode: String(l.serviceCode || '').trim().toUpperCase().slice(0, 30), shipmentRefId: l.shipmentRefId || '',
-            containerQty: (cq === '' || cq === undefined) ? null : cq, netMinor: net, vatMode: mode, vatRateBp: rate, vatMinor: vat, grossMinor: gross,
+            containerQty: (cq === '' || cq === undefined) ? null : cq, unitPrice: hasU ? up : null, netMinor: net, vatMode: mode, vatRateBp: rate, vatMinor: vat, grossMinor: gross,
             isPassThrough: l.isPassThrough ? 1 : 0, adjustsLineId: l.adjustsLineId || '', statementPeriod: l.statementPeriod || '', lotNote: maxStr_(l.lotNote, 200),
             taxConfirmedBy: ''
         } };
@@ -1696,7 +1930,7 @@ function validateDocInput_(inp, env) {
     if (rawLines.length > 200)
         E('lines', 'TOO_MANY', 'Tối đa 200 dòng phí.');
     rawLines.forEach(function (l, i) {
-        var r = calcLine_(l, i, false);
+        var r = calcLine_(l, i, false, inp.currency);
         if (env.feeTypes && l.feeTypeCode && env.feeTypes.indexOf(l.feeTypeCode) < 0)
             r.errors.push({ path: 'lines[' + i + '].feeTypeCode', code: 'INVALID', message: 'Loại phí không tồn tại.' });
         if (env.serviceCodes && r.line.serviceCode && env.serviceCodes.indexOf(r.line.serviceCode) < 0)
@@ -2455,7 +2689,7 @@ function validateListDates_(p) {
 var ADV_MAX_VALUES_ = 50;
 var ADV_SPEC_ = {
     docs: { sel: ['partnerId', 'group', 'currency', 'status', 'payStatus', 'aging', 'orderId'], range: { amountMinor: 'amount', dueDate: 'date', docDate: 'date' }, flag: ['overdue', 'missingDue', 'hasWarning', 'onlyOutstanding', 'onlyOpening', 'noOrder'] },
-    orders: { sel: ['partnerId', 'group', 'status', 'serviceCode'], range: { orderDate: 'date' }, flag: ['onlyUninvoiced', 'onlyMissingService', 'onlyInvoicing', 'includeArchived', 'onlyArchived'] },
+    orders: { sel: ['orderId', 'partnerId', 'group', 'status', 'serviceCode'], range: { orderDate: 'date' }, flag: ['onlyUninvoiced', 'onlyMissingService', 'onlyInvoicing', 'includeArchived', 'onlyArchived'] },
     payments: { sel: ['direction', 'partnerId', 'cashAccountCode', 'status', 'currency'], range: { amountMinor: 'amount', effectiveDate: 'date' }, flag: ['onlyUnallocated'] }
 };
 function advBad_(path, msg) { return err_('VALIDATION_FAILED', msg, [{ path: path, code: 'ADV_INVALID', message: msg }]); }
@@ -2721,7 +2955,7 @@ function docGet_(user, req) {
         lines: lines.map(function (l) {
             var lb = led.bal.byLine[l.id], r = shr[l.shipmentRefId], ac = l.accrualId ? accMapD[l.accrualId] : null, od = ac && ac.orderId ? ordMapD[ac.orderId] : null;
             return { id: l.id, lineNo: l.lineNo, feeTypeCode: l.feeTypeCode, description: l.description, serviceCode: l.serviceCode || '', hsdvNo: od && l.serviceCode ? serviceNoOf_(od, l.serviceCode) : '', department: l.serviceCode ? serviceDept_(l.serviceCode) : '', declNo: r ? r.refValue : '', declDate: r ? r.refDate : '',
-                containerQty: l.containerQty, netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough,
+                containerQty: l.containerQty, unitPrice: l.unitPrice, netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough,
                 adjustsLineId: l.adjustsLineId, lotNote: l.lotNote, statementPeriod: l.statementPeriod, allocatedMinor: lb ? lb.alloc : 0, outstandingMinor: lb ? lb.out : null };
         }),
         allocations: allocs, reconcile: docReconcile_(user, d, lines, allocs, bal, asOf), actions: docActions_(user, d), history: history, partner: partnerOut_(pm[d.partnerId]), asOf: asOf,
@@ -2763,7 +2997,7 @@ function docSave_(user, req) {
         if (keepLines) {
             p = Object.assign({}, p, { direction: existing.direction, partnerId: existing.partnerId, currency: existing.currency, businessGroupCode: existing.businessGroupCode,
                 lines: tx.rows('DebtLine').filter(function (l) { return l.docId === existing.id; }).sort(function (x, y) { return x.lineNo - y.lineNo; }).map(function (l) {
-                    return { feeTypeCode: l.feeTypeCode, description: l.description, netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, containerQty: l.containerQty, isPassThrough: l.isPassThrough, serviceCode: l.serviceCode || '', declNo: '' };
+                    return { feeTypeCode: l.feeTypeCode, description: l.description, netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, containerQty: l.containerQty, unitPrice: l.unitPrice, isPassThrough: l.isPassThrough, serviceCode: l.serviceCode || '', declNo: '' };
                 }) });
             env = docEnv_(tx, p.partnerId, user);
         }
@@ -4125,7 +4359,7 @@ function orderList_(user, req) {
             return;
         if (p.group && o.businessGroupCode !== p.group)
             return;
-        if (!advIn_(adv, 'partnerId', o.customerPartnerId) || !advIn_(adv, 'group', o.businessGroupCode) || !advIn_(adv, 'status', o.status) || !advRange_(adv, 'orderDate', o.orderDate))
+        if (!advIn_(adv, 'orderId', o.id) || !advIn_(adv, 'partnerId', o.customerPartnerId) || !advIn_(adv, 'group', o.businessGroupCode) || !advIn_(adv, 'status', o.status) || !advRange_(adv, 'orderDate', o.orderDate))
             return;
         if (p.from && o.orderDate < p.from)
             return;
@@ -4204,7 +4438,7 @@ function orderGet_(user, req) {
     var docs = byId_(repoValid_('DebtDoc'));
     var out = acc.map(function (a) {
         var d = docs[a.docId], lb = led.bal.byLine[a.debtLineId];
-        return { id: a.id, kind: a.kind, serviceCode: a.sharedFrom ? '' : accrualServiceCode_(a, o), hsdvNo: a.sharedFrom ? '' : serviceNoOf_(o, accrualServiceCode_(a, o)), department: a.sharedFrom ? '' : serviceDept_(accrualServiceCode_(a, o)), partnerId: a.partnerId, partnerName: partnerName_(pm, a.partnerId), poRef: a.poRef, accrualDate: a.accrualDate, feeTypeCode: a.feeTypeCode, description: a.description, containerQty: a.containerQty,
+        return { id: a.id, kind: a.kind, serviceCode: a.sharedFrom ? '' : accrualServiceCode_(a, o), hsdvNo: a.sharedFrom ? '' : serviceNoOf_(o, accrualServiceCode_(a, o)), department: a.sharedFrom ? '' : serviceDept_(accrualServiceCode_(a, o)), partnerId: a.partnerId, partnerName: partnerName_(pm, a.partnerId), poRef: a.poRef, accrualDate: a.accrualDate, feeTypeCode: a.feeTypeCode, description: a.description, containerQty: a.containerQty, unitPrice: a.unitPrice,
             netMinor: a.netMinor, vatMode: a.vatMode, vatRateBp: a.vatRateBp, vatMinor: a.vatMinor, grossMinor: a.grossMinor, isPassThrough: a.isPassThrough, currency: a.currency, status: a.status, note: a.note, version: a.version,
             docId: a.docId, docNo: d ? d.docNo : '', docStatus: d ? d.status : '', invoiceNo: d ? d.invoiceNo : '', sharedFrom: a.sharedFrom || '', outstandingMinor: lb && !a.sharedFrom ? lb.out : null, allocatedMinor: lb && !a.sharedFrom ? lb.alloc : null };
     });
@@ -4544,7 +4778,7 @@ function accrualSave_(user, req) {
         else if (p.accrualDate < ledgerStart_())
             E('accrualDate', 'DATE_BEFORE_LEDGER_START', 'Ngày phát sinh trước ngày đầu sổ.');
         var feeTypes = catalogList_('FEE_TYPE').map(function (c) { return c.code; });
-        var calc = calcLine_({ feeTypeCode: p.feeTypeCode, description: p.description, netMinor: p.netMinor, vatMode: p.vatMode, vatRateBp: p.vatRateBp, containerQty: p.containerQty, isPassThrough: p.isPassThrough }, 0, false);
+        var calc = calcLine_({ feeTypeCode: p.feeTypeCode, description: p.description, netMinor: p.netMinor, vatMode: p.vatMode, vatRateBp: p.vatRateBp, containerQty: p.containerQty, unitPrice: p.unitPrice, isPassThrough: p.isPassThrough }, 0, false, p.currency);
         calc.errors.forEach(function (e) { errs.push({ path: e.path.replace(/^lines\[0\]\./, ''), code: e.code, message: e.message }); });
         if (p.feeTypeCode && feeTypes.indexOf(p.feeTypeCode) < 0)
             E('feeTypeCode', 'INVALID', 'Loại phí không tồn tại.');
@@ -4572,7 +4806,7 @@ function accrualSave_(user, req) {
         if (existing && existing.accrualDate)
             assertPeriodOpen_(tx, existing.accrualDate);
         assertPeriodOpen_(tx, p.accrualDate);
-        var l = calc.line, fields = { orderId: mode === 'ORDER' ? o.id : '', serviceCode: svcCode, kind: p.kind, partnerId: partner.id, poRef: maxStr_(p.poRef, 100).trim(), accrualDate: p.accrualDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty,
+        var l = calc.line, fields = { orderId: mode === 'ORDER' ? o.id : '', serviceCode: svcCode, kind: p.kind, partnerId: partner.id, poRef: maxStr_(p.poRef, 100).trim(), accrualDate: p.accrualDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty, unitPrice: l.unitPrice,
             netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough, currency: p.currency, note: maxStr_(p.note, 300) };
         var creditWarn = p.kind === 'REVENUE' ? enforceCredit_(tx, user, partner.id, p.currency, todayVn_(), existing ? l.grossMinor - existing.grossMinor : l.grossMinor, p) : [];
         var row = existing ? tx.update('Accrual', existing.id, fields, p.ifVersion) : tx.insert('Accrual', Object.assign({ status: 'OPEN', docId: '', debtLineId: '' }, fields));
@@ -4671,7 +4905,7 @@ function accrualList_(user, req) {
     requirePerm_(user, 'read');
     var p = req.payload || {}, D = orderListData_(user, todayVn_()), orders = byId_(D.orders), rows = [];
     function pass(a) { return !(a.status === 'CANCELLED' || (p.kind && a.kind !== p.kind) || (p.status && a.status !== p.status) || (p.partnerId && a.partnerId !== p.partnerId) || (p.currency && a.currency !== p.currency)); }
-    function base(a) { return { id: a.id, version: a.version, serviceCode: a.serviceCode || '', poRef: a.poRef, partnerId: a.partnerId, kind: a.kind, partnerName: partnerName_(D.pm, a.partnerId), accrualDate: a.accrualDate, feeTypeCode: a.feeTypeCode, description: a.description, grossMinor: a.grossMinor, netMinor: a.netMinor, vatMode: a.vatMode, vatRateBp: a.vatRateBp, vatMinor: a.vatMinor, containerQty: a.containerQty, isPassThrough: a.isPassThrough, note: a.note, currency: a.currency, status: a.status, docId: a.docId }; }
+    function base(a) { return { id: a.id, version: a.version, serviceCode: a.serviceCode || '', poRef: a.poRef, partnerId: a.partnerId, kind: a.kind, partnerName: partnerName_(D.pm, a.partnerId), accrualDate: a.accrualDate, feeTypeCode: a.feeTypeCode, description: a.description, grossMinor: a.grossMinor, netMinor: a.netMinor, vatMode: a.vatMode, vatRateBp: a.vatRateBp, vatMinor: a.vatMinor, containerQty: a.containerQty, unitPrice: a.unitPrice, isPassThrough: a.isPassThrough, note: a.note, currency: a.currency, status: a.status, docId: a.docId }; }
     D.acc.forEach(function (a) {
         if (!pass(a))
             return;
@@ -4908,7 +5142,7 @@ function accrualInvoice_(user, req) {
         if (kind === 'COST' && (!String(p.invoiceNo || '').trim() || !isDate_(p.invoiceDate)))
             throw err_('VALIDATION_FAILED', 'Hóa đơn mua phải có số hóa đơn và ngày hóa đơn của nhà cung cấp.', [{ path: 'invoiceNo', code: 'REQUIRED', message: 'Nhập số hóa đơn của NCC.' }, { path: 'invoiceDate', code: 'REQUIRED', message: 'Nhập ngày hóa đơn.' }].filter(function (f) { return f.path === 'invoiceNo' ? !String(p.invoiceNo || '').trim() : !isDate_(p.invoiceDate); }));
         var partner = tx.find('Partner', first.partnerId);
-        var raw = accs.map(function (a) { return { feeTypeCode: a.feeTypeCode, description: a.description, netMinor: a.netMinor, vatMode: a.vatMode, vatRateBp: a.vatRateBp, containerQty: a.containerQty, isPassThrough: a.isPassThrough, serviceCode: a.orderId && orders[a.orderId] ? accrualServiceCode_(a, orders[a.orderId]) : '', declNo: '', lotNote: a.poRef ? 'PO ' + a.poRef : '' }; });
+        var raw = accs.map(function (a) { return { feeTypeCode: a.feeTypeCode, description: a.description, netMinor: a.netMinor, vatMode: a.vatMode, vatRateBp: a.vatRateBp, containerQty: a.containerQty, unitPrice: a.unitPrice, isPassThrough: a.isPassThrough, serviceCode: a.orderId && orders[a.orderId] ? accrualServiceCode_(a, orders[a.orderId]) : '', declNo: '', lotNote: a.poRef ? 'PO ' + a.poRef : '' }; });
         var input = { direction: kind === 'REVENUE' ? 'AR' : 'AP', docType: 'INVOICE', partnerId: first.partnerId, currency: first.currency, businessGroupCode: group, docDate: p.docDate || p.invoiceDate || '', invoiceNo: p.invoiceNo, invoiceSerial: p.invoiceSerial, invoiceDate: p.invoiceDate,
             statementPeriod: p.statementPeriod, dueDate: p.dueDate, dueDateSource: p.dueDateSource, statusNote: p.statusNote, batchLabel: p.batchLabel, lines: raw };
         var v = validateDocInput_(input, docEnv_(tx, first.partnerId));
@@ -4975,16 +5209,29 @@ function bulkBuild_(env, kind, rows) {
             E('date', 'DATE_BEFORE_LEDGER_START', 'Ngày trước ngày đầu sổ.');
         else if (closedMonths[date.slice(0, 7)])
             E('date', 'PERIOD_CLOSED', 'Kỳ ' + date.slice(0, 7) + ' đã khóa: không nhập vào kỳ đã khóa (dùng ngày thuộc kỳ đang mở hoặc xin mở lại kỳ).');
-        var cq = r.containerQty === '' || r.containerQty === null || r.containerQty === undefined ? null : Number(r.containerQty);
+        var cq = parseDecText_(r.containerQty, 3), up = parseDecText_(r.unitPrice, 4);
+        if (Number.isNaN(cq)) {
+            E('containerQty', 'QTY_INVALID', 'Số lượng không hợp lệ (tối đa 3 số lẻ).');
+            cq = null;
+        }
+        if (Number.isNaN(up)) {
+            E('unitPrice', 'UNIT_PRICE_INVALID', 'Đơn giá không hợp lệ (tối đa 4 số lẻ).');
+            up = null;
+        }
         function doCalc(currency) {
             if (!vat || !fee || !currency || !cur[currency])
                 return;
             var dec = cur[currency].decimals, net = r.netText !== undefined ? parseAmountMinor_(r.netText, dec === 0 ? 0 : 2) : { minor: r.netMinor };
+            if (net.empty && cq !== null && up !== null) {
+                var mq = mulQtyPrice_(cq, up, dec);
+                if (mq !== null)
+                    net = { minor: mq };
+            }
             if (net.error || net.empty) {
                 E('netMinor', net.error || 'AMOUNT_REQUIRED', 'Số tiền không hợp lệ' + (dec === 0 ? ' (VND: số nguyên đồng).' : ' (tối đa 2 số lẻ).'));
                 return;
             }
-            var calc = calcLine_({ feeTypeCode: fee, description: r.description, netMinor: net.minor, vatMode: vat.mode, vatRateBp: vat.bp, containerQty: cq, isPassThrough: r.isPassThrough }, 0, false);
+            var calc = calcLine_({ feeTypeCode: fee, description: r.description, netMinor: net.minor, vatMode: vat.mode, vatRateBp: vat.bp, containerQty: cq, unitPrice: up, isPassThrough: r.isPassThrough }, 0, false, currency);
             calc.errors.forEach(function (e) { E(e.path.replace(/^lines\[0\]\./, ''), e.code, e.message); });
             res.line = calc.line;
         }
@@ -5122,7 +5369,7 @@ function bulkBuild_(env, kind, rows) {
             }
         }
         if (!issues.length && res.line && (order || (kind === 'COST' && mode !== 'ORDER'))) {
-            var a = env.insert('Accrual', { orderId: order ? order.id : '', serviceCode: order ? svcCode : '', kind: kind, partnerId: partner.id, poRef: kind === 'COST' ? maxStr_(r.poRef, 100).trim() : '', accrualDate: date, feeTypeCode: res.line.feeTypeCode, description: res.line.description, containerQty: res.line.containerQty,
+            var a = env.insert('Accrual', { orderId: order ? order.id : '', serviceCode: order ? svcCode : '', kind: kind, partnerId: partner.id, poRef: kind === 'COST' ? maxStr_(r.poRef, 100).trim() : '', accrualDate: date, feeTypeCode: res.line.feeTypeCode, description: res.line.description, containerQty: res.line.containerQty, unitPrice: res.line.unitPrice,
                 netMinor: res.line.netMinor, vatMode: res.line.vatMode, vatRateBp: res.line.vatRateBp, vatMinor: res.line.vatMinor, grossMinor: res.line.grossMinor, isPassThrough: res.line.isPassThrough, currency: currency, status: 'OPEN', docId: '', debtLineId: '', note: 'Nhập hàng loạt' });
             if (res.shares)
                 res.shares.forEach(function (x) { env.insert('AccrualSplit', { accrualId: a.id, orderId: x.orderId, shareNetMinor: x.net, shareVatMinor: x.vat, shareGrossMinor: x.net + x.vat, basis: x.basis, note: '' }); });
@@ -5232,17 +5479,27 @@ function invBulkBuild_(env, user, dir, rows) {
                 E(i, 'vat', 'TAX_INVALID', 'Thuế: ghi KCT, số % (vd 8), hoặc để trống = chưa xác nhận.');
             if (sc && svc.indexOf(sc) < 0)
                 E(i, 'serviceCode', 'SERVICE_CODE_UNKNOWN', 'Mã dịch vụ "' + sc + '" không có trong danh mục.');
-            var dec = cur[g.currency] ? cur[g.currency].decimals : 0, net = parseAmountMinor_(r.netText === undefined ? '' : r.netText, dec === 0 ? 0 : 2);
+            var dec = cur[g.currency] ? cur[g.currency].decimals : 0, net = parseAmountMinor_(r.netText === undefined ? '' : r.netText, dec === 0 ? 0 : 2), cq = parseDecText_(r.containerQty, 3), up = parseDecText_(r.unitPrice, 4);
+            if (net.empty && cq !== null && up !== null && !Number.isNaN(cq) && !Number.isNaN(up)) {
+                var mq2 = mulQtyPrice_(cq, up, dec);
+                if (mq2 !== null)
+                    net = { minor: mq2 };
+            }
             if (net.error || net.empty)
                 E(i, 'netMinor', net.error || 'AMOUNT_REQUIRED', 'Số tiền không hợp lệ' + (dec === 0 ? ' (VND: số nguyên đồng).' : ' (tối đa 2 số lẻ).'));
             if (!String(r.description || '').trim())
                 E(i, 'description', 'DESCRIPTION_REQUIRED', 'Thiếu diễn giải.');
             if (r.declDate && !isDate_(r.declDate))
                 E(i, 'declDate', 'DATE_INVALID', 'Ngày tờ khai không hợp lệ (dd/MM/yyyy).');
-            var cq = r.containerQty === '' || r.containerQty === undefined || r.containerQty === null ? null : Number(r.containerQty);
-            if (cq !== null && (!isFinite(cq) || cq < 0))
-                E(i, 'containerQty', 'CONTAINER_QTY', 'Số lượng container không hợp lệ.');
-            var raw = { feeTypeCode: fee || '', description: String(r.description || '').trim(), netMinor: net.minor, vatMode: vat ? vat.mode : 'UNCONFIRMED', vatRateBp: vat ? vat.bp : null, serviceCode: sc, isPassThrough: r.isPassThrough ? 1 : 0, containerQty: cq, declNo: String(r.declNo || '').trim(), declDate: r.declDate || '', lotNote: String(r.lotNote || '').trim().slice(0, 200) };
+            if (Number.isNaN(cq)) {
+                E(i, 'containerQty', 'QTY_INVALID', 'Số lượng không hợp lệ (tối đa 3 số lẻ).');
+                cq = null;
+            }
+            if (Number.isNaN(up)) {
+                E(i, 'unitPrice', 'UNIT_PRICE_INVALID', 'Đơn giá không hợp lệ (tối đa 4 số lẻ).');
+                up = null;
+            }
+            var raw = { feeTypeCode: fee || '', description: String(r.description || '').trim(), netMinor: net.minor, vatMode: vat ? vat.mode : 'UNCONFIRMED', vatRateBp: vat ? vat.bp : null, serviceCode: sc, isPassThrough: r.isPassThrough ? 1 : 0, containerQty: cq, unitPrice: up, declNo: String(r.declNo || '').trim(), declDate: r.declDate || '', lotNote: String(r.lotNote || '').trim().slice(0, 200) };
             lines.push(raw);
             rawLines.push(raw);
             rowOfLine.push(i);
@@ -5406,7 +5663,7 @@ function docBulkCommit_(user, req) {
             d.lines.forEach(function (l, k) {
                 var pl = linked ? d.plan[k] : null, accId = pl ? pl.accrualId : '', acc = null;
                 if (pl && !accId) {
-                    acc = tx.insert('Accrual', { orderId: pl.orderId, serviceCode: d.raw[k].serviceCode, kind: kind, partnerId: d.partner.id, poRef: pl.poRef, accrualDate: d.doc.docDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty === undefined ? null : l.containerQty,
+                    acc = tx.insert('Accrual', { orderId: pl.orderId, serviceCode: d.raw[k].serviceCode, kind: kind, partnerId: d.partner.id, poRef: pl.poRef, accrualDate: d.doc.docDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty === undefined ? null : l.containerQty, unitPrice: l.unitPrice === undefined ? null : l.unitPrice,
                         netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough, currency: d.doc.currency, status: 'INVOICING', docId: doc.id, debtLineId: '', note: 'Tạo từ nhập hàng loạt hóa đơn ' + d.doc.invoiceNo });
                     accId = acc.id;
                 }
@@ -7252,6 +7509,7 @@ function paymentGet_(user, req) {
             effectiveDate: a.effectiveDate, reversesAllocId: a.reversesAllocId, fxDiffBaseMinor: a.fxDiffBaseMinor || 0 };
     });
     var out = payRowOut_(x, led, {});
+    out.allocPlan = safeJson_(x.allocPlanJson, []).map(function (pl) { var d = docs[pl.docId], b = led.bal.byDoc ? led.bal.byDoc[pl.docId] : null; return { docId: pl.docId, amountMinor: pl.amountMinor, docNo: d ? d.docNo : '', invoiceNo: d ? d.invoiceNo : '', outstandingMinor: b ? b.out : null }; });
     var un = out.unallocatedMinor;
     var allocSum = allocs.reduce(function (t, a) { return t + (a.amountMinor || 0); }, 0);
     return { payment: out, allocations: allocs, reconcile: { allocCount: allocs.length, parentMinor: x.amountMinor, allocSumMinor: allocSum, ledgerAllocMinor: out.allocatedMinor, allocOk: allocSum === out.allocatedMinor && allocSum <= x.amountMinor && allocSum >= 0, allocDiffMinor: allocSum - out.allocatedMinor, overAllocated: allocSum > x.amountMinor, currency: x.currency, scoped: !(user.scope && user.scope.allPartners) }, actions: payActions_(user, x, un || 0), warnings: out.warnings,
@@ -7317,6 +7575,36 @@ function paymentSave_(user, req) {
         var fields = { direction: p.direction, partnerId: partner.id, currency: p.currency, amountMinor: p.amountMinor, effectiveDate: p.effectiveDate, method: p.method || 'BANK',
             cashAccountCode: p.cashAccountCode, bankRef: maxStr_(p.bankRef, 100).trim(), purpose: p.purpose || 'SETTLE', note: maxStr_(p.note, 500), status: 'DRAFT', source: 'MANUAL',
             warningsJson: warnings.length ? JSON.stringify(warnings) : '' };
+        // R35: chọn sẵn hóa đơn/chứng từ cần thanh toán ngay trên phiếu (kế hoạch phân bổ theo chứng từ). Khi phiếu được GHI NHẬN, hệ thống tự phân bổ theo kế hoạch này.
+        if (p.allocPlan !== undefined) {
+            var arrPlan = Array.isArray(p.allocPlan) ? p.allocPlan : [], planOut = [];
+            if (arrPlan.length > 200)
+                throw err_('VALIDATION_FAILED', 'Tối đa 200 chứng từ trong một phiếu.', [{ path: 'allocPlan', code: 'TOO_MANY', message: 'Tối đa 200 chứng từ.' }]);
+            if (arrPlan.length) {
+                var docsP = tx.rows('DebtDoc'), linesP = tx.rows('DebtLine'), balP = computeBalances(docsP, linesP, tx.rows('Allocation'), '9999-12-31'), dmP = byId_(docsP), outP = {}, seenP = {}, sumP = 0, perr = [];
+                linesP.forEach(function (l) { var b = balP.byLine[l.id]; if (b && b.out > 0)
+                    outP[l.docId] = (outP[l.docId] || 0) + b.out; });
+                arrPlan.forEach(function (it, ix) {
+                    var d = it && dmP[it.docId], pth = 'allocPlan[' + ix + '].amountMinor';
+                    if (!d || d.status !== 'POSTED' || d.partnerId !== partner.id || d.currency !== p.currency || (p.direction === 'IN') !== (d.direction === 'AR') || !inScope_(user, partner, d.businessGroupCode))
+                        return perr.push({ path: pth, code: 'DOC_INVALID', message: 'Chứng từ không hợp lệ cho phiếu này (khác đối tác, tiền tệ, chiều hoặc chưa ghi nhận).' });
+                    if (seenP[d.id])
+                        return perr.push({ path: pth, code: 'DUPLICATE', message: 'Chứng từ bị chọn hai lần.' });
+                    seenP[d.id] = 1;
+                    if (!Number.isSafeInteger(it.amountMinor) || it.amountMinor <= 0)
+                        return perr.push({ path: pth, code: 'AMOUNT_INVALID', message: 'Số tiền phân bổ phải là số nguyên dương.' });
+                    if (it.amountMinor > (outP[d.id] || 0))
+                        return perr.push({ path: pth, code: 'EXCEEDS_OUTSTANDING', message: 'Vượt số còn nợ của chứng từ ' + d.docNo + ' (còn ' + fmtMoney_(outP[d.id] || 0, p.currency) + ').' });
+                    sumP += it.amountMinor;
+                    planOut.push({ docId: d.id, amountMinor: it.amountMinor });
+                });
+                if (!perr.length && sumP > p.amountMinor)
+                    perr.push({ path: 'allocPlan', code: 'EXCEEDS_PAYMENT', message: 'Tổng phân bổ (' + fmtMoney_(sumP, p.currency) + ') vượt số tiền của phiếu.' });
+                if (perr.length)
+                    throw err_('VALIDATION_FAILED', 'Chọn hóa đơn thanh toán chưa hợp lệ', perr);
+            }
+            fields.allocPlanJson = planOut.length ? JSON.stringify(planOut) : '';
+        }
         fields.fxRateE4 = fxp ? fxp.e4 : 0;
         fields.fxSource = fxp ? fxp.source : '';
         fields.amountBaseMinor = fxp ? fxToBase_(p.amountMinor, cur[p.currency].decimals, fxp.e4) : p.amountMinor;
@@ -7380,6 +7668,36 @@ function payDelete_(user, req) {
         return { result: { status: 'DELETED' } };
     });
 }
+// Tự phân bổ theo kế hoạch chọn hóa đơn đã lưu trên phiếu khi ghi nhận. Không làm hỏng việc ghi nhận: nếu phân bổ không thực hiện được thì phiếu vẫn ghi nhận và kết quả báo lý do (phân bổ tay sau).
+function payApplyPlan_(user, tx, pay, p) {
+    var plan = safeJson_(pay.allocPlanJson, []);
+    if (!plan.length)
+        return null;
+    try {
+        var docs = tx.rows('DebtDoc'), lines = tx.rows('DebtLine'), bal = computeBalances(docs, lines, tx.rows('Allocation'), '9999-12-31'), items = [], short = 0;
+        plan.forEach(function (pl) {
+            var left = pl.amountMinor;
+            lines.filter(function (l) { return l.docId === pl.docId; }).sort(function (a, b) { return a.lineNo - b.lineNo; }).forEach(function (l) {
+                var b = bal.byLine[l.id];
+                if (!b || b.out <= 0 || left <= 0)
+                    return;
+                var t = Math.min(left, b.out);
+                items.push({ debtLineId: l.id, amountMinor: t });
+                left -= t;
+            });
+            short += left;
+        });
+        if (!items.length)
+            return { applied: false, message: 'Các chứng từ đã chọn không còn nợ: phiếu ghi nhận nhưng chưa phân bổ.' };
+        var pays = tx.rows('Payment').map(function (r) { return r.id === pay.id ? Object.assign({}, r, pay, { status: 'POSTED' }) : r; });
+        var core = allocApplyCore_(user, tx, Object.assign({}, pay, { status: 'POSTED' }), items, pay.effectiveDate, 'Phân bổ theo chứng từ chọn trên phiếu', pays);
+        tx.update('Payment', pay.id, { allocPlanJson: '' }, undefined);
+        return { applied: true, allocatedMinor: core.total, lines: core.lines, shortMinor: short, message: short > 0 ? 'Một số chứng từ không còn đủ số nợ: còn ' + fmtMoney_(short, pay.currency) + ' chưa phân bổ.' : '' };
+    }
+    catch (e) {
+        return { applied: false, message: 'Không tự phân bổ được theo chứng từ đã chọn: ' + String(e && (e.userMessage || e.message) || e).slice(0, 200) + ' — phiếu vẫn được ghi nhận; hãy phân bổ tay.' };
+    }
+}
 function payPost_(user, req) {
     return payTransition_(user, req, 'payment.approve', 'payment.post', function (tx, x, p) {
         mustBe_(x, ['APPROVED']);
@@ -7402,7 +7720,8 @@ function payPost_(user, req) {
             }
         }
         tx.update('Payment', x.id, upd, p.ifVersion);
-        return { result: { status: 'POSTED', periodId: periodId, fx: fxInfo }, diff: fxInfo };
+        var planRes = payApplyPlan_(user, tx, Object.assign({}, x, upd), p);
+        return { result: { status: 'POSTED', periodId: periodId, fx: fxInfo, alloc: planRes }, diff: fxInfo };
     });
 }
 function payReverse_(user, req) {
@@ -7426,28 +7745,13 @@ function payReverse_(user, req) {
         return { result: { status: 'REVERSED' }, diff: { reason: p.reason } };
     });
 }
-function paymentAllocate_(user, req) {
-    requirePerm_(user, 'payment.allocate');
-    var p = req.payload;
-    fxPrepAlloc_(user, p);
-    return runTx_(user, { requestId: req.requestId, action: 'payment.allocate', payload: p, failAt: req.failAt }, function (tx) {
-        var pay = tx.find('Payment', p.paymentId);
-        if (!pay)
-            throw err_('NOT_FOUND', 'Không tìm thấy phiếu.');
-        assertVisible_(user, tx.find('Partner', pay.partnerId), '', '', 'Không tìm thấy phiếu.');
-        if (p.ifVersion !== undefined && p.ifVersion !== null && Number(p.ifVersion) !== pay.version)
-            throw err_('VERSION_CONFLICT', 'Phiếu đã thay đổi, hãy tải lại.');
-        var eff = p.effectiveDate || (pay.effectiveDate > todayVn_() ? pay.effectiveDate : todayVn_());
-        if (!isDate_(eff))
-            throw err_('VALIDATION_FAILED', 'Ngày phân bổ không hợp lệ', [{ path: 'effectiveDate', code: 'DATE_INVALID', message: 'Ngày không hợp lệ.' }]);
-        if (eff < pay.effectiveDate)
-            throw err_('VALIDATION_FAILED', 'Ngày phân bổ không được trước ngày hiệu lực của phiếu', [{ path: 'effectiveDate', code: 'DATE_BEFORE_PAYMENT', message: 'Không trước ngày hiệu lực phiếu (' + pay.effectiveDate + ').' }]);
+function allocApplyCore_(user, tx, pay, rawItems, eff, note, paysOverride) {
         var periodId = assertPeriodOpen_(tx, eff);
-        var docs = tx.rows('DebtDoc'), lines = tx.rows('DebtLine'), allocs = tx.rows('Allocation'), pays = tx.rows('Payment');
+        var docs = tx.rows('DebtDoc'), lines = tx.rows('DebtLine'), allocs = tx.rows('Allocation'), pays = paysOverride || tx.rows('Payment');
         var bal = computeBalances(docs, lines, allocs, '9999-12-31'), pb = paymentBalances(pays, allocs, '9999-12-31');
         var dm = byId_(docs), lm = byId_(lines);
         var pmA = byId_(tx.rows('Partner'));
-        var items = (p.items || []).map(function (it) {
+        var items = (rawItems || []).map(function (it) {
             var l = lm[it.debtLineId], dd = l ? dm[l.docId] : null;
             if (dd && !inScope_(user, pmA[dd.partnerId], dd.businessGroupCode)) {
                 l = null;
@@ -7469,12 +7773,31 @@ function paymentAllocate_(user, req) {
                 fxMissing++;
             fxDiffTotal += fx.diff;
             return tx.insert('Allocation', { paymentId: pay.id, debtLineId: it.line.id, docId: it.doc.id, partnerId: pay.partnerId, currency: pay.currency, amountMinor: it.amount,
-                effectiveDate: eff, status: 'ACTIVE', reversesAllocId: '', periodId: periodId, note: maxStr_(p.note, 300), fxPayRateE4: fx.payE4, fxDocRateE4: fx.docE4, fxDiffBaseMinor: fx.diff });
+                effectiveDate: eff, status: 'ACTIVE', reversesAllocId: '', periodId: periodId, note: maxStr_(note, 300), fxPayRateE4: fx.payE4, fxDocRateE4: fx.docE4, fxDiffBaseMinor: fx.diff });
         });
+    var total = sumBy_(items, function (i) { return i.amount; });
+    return { created: created, total: total, unalloc: pb[pay.id].unalloc - total, fxDiffTotal: fxDiffTotal, fxMissing: fxMissing, lines: items.length };
+}
+function paymentAllocate_(user, req) {
+    requirePerm_(user, 'payment.allocate');
+    var p = req.payload;
+    fxPrepAlloc_(user, p);
+    return runTx_(user, { requestId: req.requestId, action: 'payment.allocate', payload: p, failAt: req.failAt }, function (tx) {
+        var pay = tx.find('Payment', p.paymentId);
+        if (!pay)
+            throw err_('NOT_FOUND', 'Không tìm thấy phiếu.');
+        assertVisible_(user, tx.find('Partner', pay.partnerId), '', '', 'Không tìm thấy phiếu.');
+        if (p.ifVersion !== undefined && p.ifVersion !== null && Number(p.ifVersion) !== pay.version)
+            throw err_('VERSION_CONFLICT', 'Phiếu đã thay đổi, hãy tải lại.');
+        var eff = p.effectiveDate || (pay.effectiveDate > todayVn_() ? pay.effectiveDate : todayVn_());
+        if (!isDate_(eff))
+            throw err_('VALIDATION_FAILED', 'Ngày phân bổ không hợp lệ', [{ path: 'effectiveDate', code: 'DATE_INVALID', message: 'Ngày không hợp lệ.' }]);
+        if (eff < pay.effectiveDate)
+            throw err_('VALIDATION_FAILED', 'Ngày phân bổ không được trước ngày hiệu lực của phiếu', [{ path: 'effectiveDate', code: 'DATE_BEFORE_PAYMENT', message: 'Không trước ngày hiệu lực phiếu (' + pay.effectiveDate + ').' }]);
+        var core = allocApplyCore_(user, tx, pay, p.items, eff, p.note);
         tx.update('Payment', pay.id, { note: pay.note }, undefined);
-        var total = sumBy_(items, function (i) { return i.amount; });
-        return { result: { allocationIds: created.map(function (a) { return a.id; }), allocatedMinor: total, unallocatedMinor: pb[pay.id].unalloc - total, fxDiffBaseMinor: fxDiffTotal, fxMissing: fxMissing },
-            audit: [{ entityType: 'Payment', entityId: pay.id, action: 'payment.allocate', diff: { total: total, lines: items.length } }] };
+        return { result: { allocationIds: core.created.map(function (a) { return a.id; }), allocatedMinor: core.total, unallocatedMinor: core.unalloc, fxDiffBaseMinor: core.fxDiffTotal, fxMissing: core.fxMissing },
+            audit: [{ entityType: 'Payment', entityId: pay.id, action: 'payment.allocate', diff: { total: core.total, lines: core.lines } }] };
     });
 }
 function paymentReverseAllocation_(user, req) {
@@ -7500,6 +7823,30 @@ function paymentReverseAllocation_(user, req) {
             fxDiffBaseMinor: a.fxDiffBaseMinor ? -Math.round(a.fxDiffBaseMinor * amount / a.amountMinor) : 0 });
         return { result: { id: row.id, reversedMinor: amount }, audit: [{ entityType: 'Payment', entityId: a.paymentId, action: 'payment.reverseAllocation', diff: { allocation: a.id, amount: amount } }] };
     });
+}
+// Chứng từ còn nợ của một đối tác (theo chiều, tiền tệ) để chọn thanh toán ngay trên phiếu thu/chi.
+function paymentOpenDocs_(user, req) {
+    requirePerm_(user, 'read');
+    var p = req.payload || {};
+    if ((p.direction !== 'IN' && p.direction !== 'OUT') || !p.partnerId || !p.currency)
+        return { items: [] };
+    assertVisible_(user, partnerMap_()[p.partnerId], '', '', 'Không tìm thấy đối tác.');
+    var led = loadLedger_(user, '9999-12-31'), by = {}, items = [];
+    led.lines.forEach(function (l) {
+        var d = led.docById[l.docId], b = led.bal.byLine[l.id];
+        if (!d || !b || d.partnerId !== p.partnerId || d.currency !== p.currency || d.status !== 'POSTED' || b.out <= 0 || (p.direction === 'IN') !== (d.direction === 'AR'))
+            return;
+        var x = by[d.id];
+        if (!x) {
+            x = by[d.id] = { docId: d.id, docNo: d.docNo, invoiceNo: d.invoiceNo || '', docDate: d.docDate || '', dueDate: d.dueDate || '', outstandingMinor: 0, description: l.description || '', lineCount: 0, lines: [] };
+            items.push(x);
+        }
+        x.outstandingMinor += b.out;
+        x.lineCount++;
+        x.lines.push({ description: l.description || '', outstandingMinor: b.out });
+    });
+    items.sort(function (a, b) { return cmpStr_(a.docDate, b.docDate) || cmpStr_(a.docNo, b.docNo); });
+    return { items: items };
 }
 function paymentSuggest_(user, req) {
     requirePerm_(user, 'read');
@@ -9954,7 +10301,7 @@ function routes_() {
         'perf.get': { fn: perfGet_ }, 'perf.set': { fn: perfSet_, write: true },
         'fx.list': { fn: fxList_ }, 'fx.save': { fn: fxSave_, write: true }, 'fx.fetch': { fn: fxFetch_, write: true }, 'fx.backfill': { fn: fxBackfill_, write: true }, 'fx.grants.get': { fn: fxGrantsGet_ }, 'fx.grants.set': { fn: fxGrantsSet_, write: true }, 'fx.entryPreview': { fn: fxEntryPreview_ }, 'fx.entryList': { fn: fxEntryList_ }, 'fx.entryCreate': { fn: fxEntryCreate_, write: true }, 'fx.entryPost': { fn: fxEntryPost_, write: true }, 'fx.entryReverse': { fn: fxEntryReverse_, write: true }, 'payment.list': { fn: paymentList_ }, 'payment.get': { fn: paymentGet_ }, 'payment.save': { fn: paymentSave_, write: true }, 'payment.submit': { fn: paySubmit_, write: true },
         'payment.approve': { fn: payApprove_, write: true }, 'payment.reject': { fn: payReject_, write: true }, 'payment.post': { fn: payPost_, write: true }, 'payment.delete': { fn: payDelete_, write: true },
-        'payment.reverse': { fn: payReverse_, write: true }, 'payment.allocate': { fn: paymentAllocate_, write: true }, 'payment.reverseAllocation': { fn: paymentReverseAllocation_, write: true }, 'payment.suggest': { fn: paymentSuggest_ },
+        'payment.reverse': { fn: payReverse_, write: true }, 'payment.openDocs': { fn: paymentOpenDocs_ }, 'payment.allocate': { fn: paymentAllocate_, write: true }, 'payment.reverseAllocation': { fn: paymentReverseAllocation_, write: true }, 'payment.suggest': { fn: paymentSuggest_ },
         'opening.get': { fn: openingGet_ }, 'opening.save': { fn: openingSave_, write: true }, 'opening.submit': { fn: openingSubmit_, write: true }, 'opening.reject': { fn: openingReject_, write: true }, 'opening.commit': { fn: openingCommit_, write: true },
         'import.bankPreview': { fn: importBankPreview_, write: true }, 'import.get': { fn: importGet_ }, 'import.list': { fn: importList_ }, 'import.rowDecide': { fn: importRowDecide_, write: true },
         'import.cancel': { fn: importCancel_, write: true }, 'import.bankCommit': { fn: importBankCommit_, write: true },
@@ -9963,6 +10310,7 @@ function routes_() {
         'reminder.preview': { fn: reminderPreview_ }, 'reminder.send': { fn: reminderSend_, write: true },
         'report.run': { fn: reportRun_ }, 'report.export': { fn: reportExport_ }, 'report.issue': { fn: reportIssue_, write: true }, 'report.snapshots': { fn: reportSnapshots_ }, 'report.snapshotExport': { fn: reportSnapshotExport_ },
         'backup.run': { fn: backupRun_, backup: true }, 'backup.list': { fn: backupList_, backup: true }, 'backup.verify': { fn: backupVerify_, backup: true }, 'backup.restorePrepare': { fn: backupRestorePrepare_, backup: true },
+        'company.initStatus': { fn: companyInitStatus_, backup: true }, 'company.initRequest': { fn: companyInitRequest_, backup: true }, 'company.initCancel': { fn: companyInitCancel_, backup: true }, 'company.initConfirm': { fn: companyInitConfirm_, backup: true }, 'company.initRollback': { fn: companyInitRollback_, backup: true },
         'backup.switch': { fn: backupSwitch_, backup: true }, 'backup.rollbackSwitch': { fn: backupRollbackSwitch_, backup: true }, 'backup.cancelRestore': { fn: backupCancelRestore_, backup: true },
         'user.list': { fn: userList_ }, 'user.save': { fn: userSave_, write: true }, 'catalog.list': { fn: catalogList2_ }, 'catalog.save': { fn: catalogSave_, write: true },
         'config.get': { fn: configGet_ }, 'config.set': { fn: configSet_, write: true }, 'audit.list': { fn: auditList_ }

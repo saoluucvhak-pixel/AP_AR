@@ -24,7 +24,9 @@ function rpc(envelope) {
         resp = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true, followRedirects: true });
     }
     catch (e) {
-        return { ok: false, error: { code: 'SERVER_BUSY', message: 'Không kết nối được máy chủ dữ liệu.', retryable: true } };
+
+        var why = fetchFailHint_(e);
+        return { ok: false, error: { code: 'SERVER_BUSY', message: 'Không kết nối được máy chủ dữ liệu.' + (why ? ' ' + why : ''), retryable: true } };
     }
     var out;
     try {
@@ -49,4 +51,36 @@ function flowDoc() {
     if (!who || !who.ok)
         throw new Error('FORBIDDEN');
     return HtmlService.createHtmlOutputFromFile('luong-nghiep-vu').getContent();
+}
+
+function fetchFailHint_(e) {
+    var m = String(e && e.message || e);
+    if (/permission|authori[sz]|scope|external_request/i.test(m))
+        return 'Gateway chưa được cấp quyền gọi URL bên ngoài (UrlFetchApp): mở trình soạn thảo Gateway, chạy diagBackend() và bấm Cho phép.';
+    if (/invalid argument|invalid url|malformed|not a valid/i.test(m))
+        return 'BACKEND_URL (Script Properties của Gateway) không hợp lệ: phải là địa chỉ triển khai Backend kết thúc bằng /exec.';
+    if (/DNS|timed out|timeout|unavailable|Address unavailable/i.test(m))
+        return 'Máy chủ Backend chưa phản hồi (hết thời gian/không truy cập được). Thử lại sau ít phút.';
+    return 'Chạy diagBackend() trong trình soạn thảo Gateway để xem nguyên nhân.';
+}
+
+function diagBackend() {
+    var p = PropertiesService.getScriptProperties(), url = String(p.getProperty('BACKEND_URL') || ''), out = [];
+    out.push('HMAC_SECRET: ' + (p.getProperty('HMAC_SECRET') ? 'đã đặt' : 'CHƯA ĐẶT (cần cùng giá trị với Backend)'));
+    out.push('BACKEND_URL: ' + (url ? 'đã đặt (' + url.length + ' ký tự; bắt đầu "' + url.slice(0, 32) + '…", kết thúc "' + url.slice(-6) + '")' : 'CHƯA ĐẶT'));
+    if (url) {
+        if (url !== url.trim())
+            out.push('CẢNH BÁO: BACKEND_URL có khoảng trắng đầu/cuối.');
+        if (!/^https:\/\/script\.google\.com\/macros\/s\/[^\/]+\/exec$/.test(url.trim()))
+            out.push('CẢNH BÁO: BACKEND_URL không đúng dạng https://script.google.com/macros/s/<ID>/exec (không dùng địa chỉ /dev, không dùng địa chỉ của Gateway).');
+        try {
+            var r = UrlFetchApp.fetch(url.trim(), { method: 'get', muteHttpExceptions: true, followRedirects: true }), body = r.getContentText();
+            out.push('Gọi thử Backend: HTTP ' + r.getResponseCode() + (/accounts\.google\.com|ServiceLogin|Sign in/i.test(body) ? ' — Backend yêu cầu đăng nhập Google: triển khai Backend với "Ai có quyền truy cập: Bất kỳ ai" (Anyone), chạy bằng tài khoản của bạn.' : ' — ' + body.slice(0, 120).replace(/\s+/g, ' ')));
+        }
+        catch (e) {
+            out.push('LỖI khi gọi Backend: ' + String(e && e.message || e).replace(/https?:\/\/\S+/g, '<url>').slice(0, 300));
+        }
+    }
+    Logger.log(out.join('\n'));
+    return out;
 }

@@ -23,6 +23,7 @@ function DOC_FILTER_FIELDS() {
 }
 function ORDER_FILTER_FIELDS() {
     return [
+        { key: 'orderId', label: 'Đơn hàng / PO (chọn nhiều)', type: 'multi', group: 'Đối tượng', options: function () { return orderOptionsLF(); } },
         { key: 'partnerId', label: 'Khách hàng', type: 'multi', group: 'Đối tượng', options: function () { return partnerOptions(function (p) { return p.isCustomer; }, true); } },
         { key: 'group', label: 'Nhóm nghiệp vụ', type: 'multi', group: 'Đối tượng', options: function () { return groupOptions(true); } },
         { key: 'serviceCode', label: 'Mã dịch vụ', type: 'multi', group: 'Đối tượng', options: function () { return serviceOptions('', ''); } },

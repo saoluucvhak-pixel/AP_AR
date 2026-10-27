@@ -359,3 +359,15 @@ Một mẫu dùng chung, phân biệt bằng cột Tài khoản quỹ. Bấm **�
 
 ### 21.4 Thu hộ / chi hộ và tỷ giá (thay đổi R3.5)
 Khoản hộ không chịu thuế. Hai khoản hộ ngoại tệ khác ngày: chênh lệch tỷ giá khi ghép vào bút toán chênh lệch tỷ giá đã thực hiện. Thừa kiểm kê quỹ ngoại tệ nhập theo tỷ giá bình quân của quỹ. "Tính lại bình quân" gặp kỳ đã khóa thì từ chối cả lượt, mở khóa kỳ rồi tính lại.
+
+### 21.5 Khởi tạo dữ liệu cho công ty mới
+Menu **Quản trị hệ thống → Khởi tạo công ty mới**. Tạo bộ Google Sheets **mới, trống** rồi chuyển sang dùng; dữ liệu cũ **không bị xóa** và quay lại được. Giữ: người dùng và quyền, danh mục (trừ tài khoản quỹ), bản sao lưu, cấu hình chung. Bắt đầu lại: đối tác, đơn hàng, chứng từ, phiếu, tài khoản quỹ, số dư đầu kỳ, tỷ giá, số chứng từ. Hai người: người thứ nhất nhập tên/MST/ngày đầu sổ/lý do và gõ **KHOI TAO MOI**; Kế toán trưởng/Người duyệt khác xác nhận (tự sao lưu trước, lỗi thì tự quay lại). Quay lại bộ cũ ở cùng màn. Nhật ký hệ thống dùng chung.
+
+### 21.6 Phân bổ theo chứng từ, số lượng × đơn giá, nhập số, lọc nhiều đơn
+- **Phân bổ thu/chi theo chứng từ:** tích chọn chứng từ (tự điền số còn nợ, sửa được để phân bổ một phần); chỉ nút **"Tự động theo thứ tự thời gian (FIFO)"** mới phân bổ lần lượt từ chứng từ cũ nhất.
+- **SL × đơn giá = thành tiền** (thay "SL container"): SL tối đa 3 số lẻ, đơn giá tối đa 4 số lẻ; có cả hai thì thành tiền tự tính và khóa; có SL không đơn giá thì gõ thành tiền (đơn giá gợi ý = thành tiền ÷ SL). Mẫu nhập hàng loạt có cột Đơn giá: để trống Số tiền khi đã có SL + đơn giá thì tự tính.
+- **Nhập số:** tự thêm dấu chấm phân cách hàng nghìn khi gõ; dấu thập phân là dấu phẩy.
+- **Lọc nhiều đơn hàng:** danh sách Đơn hàng có mục lọc "Đơn hàng / PO (chọn nhiều)".
+
+### 21.7 Chọn hóa đơn thanh toán ngay trên phiếu thu/chi
+Ở form phiếu thu/chi có khối **Chọn hóa đơn thanh toán**: liệt kê chứng từ còn nợ của đối tác (theo chiều và tiền tệ), tích chọn (tự điền số còn nợ, sửa được) hoặc bấm "Tự động theo thứ tự thời gian (FIFO)". Lưu cùng phiếu; khi phiếu được ghi nhận, hệ thống tự phân bổ theo lựa chọn. Chứng từ hết nợ lúc ghi nhận thì phiếu vẫn ghi nhận và báo lý do, phân bổ tay sau.
