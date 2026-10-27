@@ -1,0 +1,26 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # sync.test dựng lại gói từ 6_NGUON bằng build.py nên cần Python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Thoát mã 1 nếu có test hỏng, mã 3 nếu có test BLOCKED (chưa xác minh) — cả hai đều làm job thất bại
+      - name: Chạy toàn bộ test (Node, Sheet/Cache giả)
+        run: node 4_TESTS/run-all.cjs

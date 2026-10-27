@@ -532,6 +532,8 @@ function repoAppend_(t, objs) {
     s.getRange(start, 1, objs.length, cols.length).setValues(objs.map(function (o) { return objToRow_(cols, o); }));
     delete MEMO_['t:' + t];
     delete MEMO_['v:' + t];
+    if (t === 'Catalog')
+        delete MEMO_['v:curMap'];
     delete MEMO_['idx:' + t];
     delete MEMO_['sv:' + t];
     delete MEMO_['c:' + t];
@@ -543,6 +545,8 @@ function repoWriteRow_(t, rowNo, obj) {
     s.getRange(rowNo, 1, 1, cols.length).setValues([objToRow_(cols, obj)]);
     delete MEMO_['t:' + t];
     delete MEMO_['v:' + t];
+    if (t === 'Catalog')
+        delete MEMO_['v:curMap'];
     delete MEMO_['idx:' + t];
     delete MEMO_['sv:' + t];
     delete MEMO_['c:' + t];
@@ -557,6 +561,8 @@ function repoWriteRaw_(t, rowNo, arr) {
     s.getRange(rowNo, 1, 1, cols.length).setValues([arr]);
     delete MEMO_['t:' + t];
     delete MEMO_['v:' + t];
+    if (t === 'Catalog')
+        delete MEMO_['v:curMap'];
     delete MEMO_['idx:' + t];
     delete MEMO_['sv:' + t];
     delete MEMO_['c:' + t];
@@ -573,6 +579,8 @@ function repoSetColumn_(t, startRow, count, colName, value) {
     s.getRange(startRow, ci, count, 1).setValues(arr);
     delete MEMO_['t:' + t];
     delete MEMO_['v:' + t];
+    if (t === 'Catalog')
+        delete MEMO_['v:curMap'];
     delete MEMO_['idx:' + t];
     delete MEMO_['sv:' + t];
     delete MEMO_['c:' + t];
@@ -1630,7 +1638,7 @@ function companyInitConfirm_(user, req) {
     }
 }
 function companyInitSwitch_(user, c, made, pre) {
-    var p = props_(), old = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '', tx: p.getProperty('OPEN_TX') };
+    var p = props_(), old = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '', tx: p.getProperty('OPEN_TX'), name: maxStr_(cfgGet_('entity.name', ''), 200) };
     function setIds_(mainId, draftId) { p.setProperty('DB_MAIN_ID', mainId); if (draftId)
         p.setProperty('DB_DRAFT_ID', draftId); }
     function revert_() { setIds_(old.main, old.draft); if (old.tx !== null && old.tx !== undefined)
@@ -1658,7 +1666,7 @@ function companyInitSwitch_(user, c, made, pre) {
         alertAdmin_('Khởi tạo dữ liệu mới thất bại – đã quay lại DB cũ', String(e && (e.userMessage || e.message) || e));
         throw err_('INIT_FAILED', 'Khởi tạo thất bại, đã tự quay lại dữ liệu cũ: ' + String(e && (e.userMessage || e.message) || e).slice(0, 200));
     }
-    p.setProperty('INIT_PREV', JSON.stringify({ main: old.main, draft: old.draft, at: nowIso_(), byEmail: user.email, companyName: maxStr_(cfgGet_('entity.name', ''), 200) || c.companyName, preBackup: pre && pre.id || '' }));
+    p.setProperty('INIT_PREV', JSON.stringify({ main: old.main, draft: old.draft, at: nowIso_(), byEmail: user.email, companyName: old.name, preBackup: pre && pre.id || '' }));
     p.deleteProperty('INIT_REQUEST');
     p.deleteProperty('MAINTENANCE');
     writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.init', diff: { companyName: c.companyName, ledgerStartDate: c.ledgerStartDate, keepCatalog: c.keepCatalog, from: old.main, to: made.mainId, preBackup: pre && pre.id || '', copied: made.copied } }]);
@@ -1677,17 +1685,26 @@ function companyInitRollback_(user, req) {
             throw err_('STATE_TRANSITION_INVALID', 'Không có bộ dữ liệu trước đó để quay lại.');
         if (p.getProperty('MAINTENANCE') === '1' || p.getProperty('RESTORE_CANDIDATE'))
             throw err_('STATE_TRANSITION_INVALID', 'Đang bảo trì hoặc có yêu cầu khôi phục; hủy trước khi quay lại.');
-        var cur = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '' };
-        p.setProperty('DB_MAIN_ID', prev.main);
-        if (prev.draft)
-            p.setProperty('DB_DRAFT_ID', prev.draft);
-        p.setProperty('INIT_PREV', JSON.stringify({ main: cur.main, draft: cur.draft, at: nowIso_(), byEmail: user.email, companyName: prev.companyName, preBackup: '' }));
-        p.setProperty('OPEN_TX', '{}');
-        HDR_OK_ = {};
-        bumpDataVersion_();
-        resetMemo_();
-        rmInvalidate_();
-        writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.initRollback', diff: { to: prev.main, reason: maxStr_(req.payload.reason, 300) } }]);
+        // Còn giao dịch đang mở ở bộ hiện tại: đổi con trỏ DB lúc này sẽ bỏ rơi chúng (ghi dở vào bộ đang rời đi) → từ chối, chờ xong rồi quay lại.
+        if (Object.keys(safeJson_(p.getProperty('OPEN_TX'), {})).length)
+            throw err_('STATE_TRANSITION_INVALID', 'Còn giao dịch đang xử lý; chờ hoàn tất rồi quay lại.');
+        var cur = { main: p.getProperty('DB_MAIN_ID'), draft: p.getProperty('DB_DRAFT_ID') || '', name: maxStr_(cfgGet_('entity.name', ''), 200) };
+        p.setProperty('MAINTENANCE', '1');
+        try {
+            p.setProperty('DB_MAIN_ID', prev.main);
+            if (prev.draft)
+                p.setProperty('DB_DRAFT_ID', prev.draft);
+            p.setProperty('INIT_PREV', JSON.stringify({ main: cur.main, draft: cur.draft, at: nowIso_(), byEmail: user.email, companyName: cur.name, preBackup: '' }));
+            p.setProperty('OPEN_TX', '{}');
+            HDR_OK_ = {};
+            bumpDataVersion_();
+            resetMemo_();
+            rmInvalidate_();
+            writeAudit_(user, '', '', [{ entityType: 'Company', entityId: '', action: 'company.initRollback', diff: { to: prev.main, reason: maxStr_(req.payload.reason, 300) } }]);
+        }
+        finally {
+            p.deleteProperty('MAINTENANCE');
+        }
         return { ok: true, nowUsing: prev.main };
     });
 }
@@ -2391,9 +2408,11 @@ function hsdvNumber_(env, partner, serviceCode, orderDate, orders) {
 }
 function serviceLabel_(code) { var r = serviceMap_()[code]; return code ? (r && r.name && r.name !== code ? code + ' – ' + r.name : code) : ''; }
 function currencyMap_() {
+    if (MEMO_['v:curMap'])
+        return MEMO_['v:curMap'];
     var m = {};
     catalogList_('CURRENCY').forEach(function (c) { var a = safeJson_(c.attrsJson, {}); m[c.code] = { decimals: a.decimals === undefined ? 0 : a.decimals, name: c.name }; });
-    return m;
+    return (MEMO_['v:curMap'] = m);
 }
 function partnerMap_() { return byId_(repoValid_('Partner')); }
 function partnerName_(pm, id) { var p = pm[id]; return p ? (p.shortName || p.legalName) : ''; }

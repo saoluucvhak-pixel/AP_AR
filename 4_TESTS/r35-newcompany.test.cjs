@@ -60,4 +60,28 @@ suite('6. Chuyển sang DB mới nhưng kiểm tra sau chuyển thất bại (ng
   const w=world(),oldId=w.props.DB_MAIN_ID;call(w,'companyInitRequest_',w.U('kt1'),REQ);
   eq(code(()=>call(w,'companyInitConfirm_',{id:'ghost',email:'g@x.vn',role:'APPROVER',scope:{allPartners:true}},{confirmText:'khoi tao moi'})),'INIT_FAILED');eq(w.props.DB_MAIN_ID,oldId,'về DB cũ');eq(w.props.MAINTENANCE,undefined);ok(w.trashed.length>=1,'bộ mới bị bỏ thùng rác');w.ctx.resetMemoDirect_();eq(w.ctx.repoValid_('Partner').length,1,'dữ liệu cũ nguyên vẹn');
 });
+suite('7. Trạng thái "bộ dữ liệu trước": tên công ty là của bộ vừa rời đi (khởi tạo → tên cũ; quay lui → tên mới)',()=>{
+  const w=world();call(w,'companyInitRequest_',w.U('kt1'),REQ);call(w,'companyInitConfirm_',w.U('kt2'),{confirmText:'khoi tao moi'});
+  eq(call(w,'companyInitStatus_',w.U('adm')).previous.companyName,'CÔNG TY CŨ','sau khởi tạo: bộ trước là công ty cũ');
+  call(w,'companyInitRollback_',w.U('kt2'),{reason:'nhầm'});
+  eq(call(w,'companyInitStatus_',w.U('adm')).previous.companyName,'CÔNG TY MỚI','sau quay lui: bộ trước là công ty mới');
+  call(w,'companyInitRollback_',w.U('kt2'),{reason:'lại'});
+  eq(call(w,'companyInitStatus_',w.U('adm')).previous.companyName,'CÔNG TY CŨ','quay đi quay lại giữ đúng tên');
+});
+suite('8. Quay lui: còn giao dịch đang mở → từ chối, không đổi DB; thành công thì hết bảo trì, kể cả khi ghi nhật ký lỗi',()=>{
+  const w=world(),oldId=w.props.DB_MAIN_ID;call(w,'companyInitRequest_',w.U('kt1'),REQ);call(w,'companyInitConfirm_',w.U('kt2'),{confirmText:'khoi tao moi'});const newId=w.props.DB_MAIN_ID;
+  w.props.OPEN_TX=JSON.stringify({tx1:'PENDING'});
+  eq(code(()=>call(w,'companyInitRollback_',w.U('kt2'),{reason:'x'})),'STATE_TRANSITION_INVALID');eq(w.props.DB_MAIN_ID,newId,'DB không đổi');eq(w.props.OPEN_TX,JSON.stringify({tx1:'PENDING'}),'giao dịch mở không bị xoá');eq(w.props.MAINTENANCE,undefined);
+  w.props.OPEN_TX='{}';call(w,'companyInitRollback_',w.U('kt2'),{reason:'ok'});eq(w.props.DB_MAIN_ID,oldId);eq(w.props.MAINTENANCE,undefined,'hết bảo trì sau quay lui');
+  const wa=w.ctx.writeAudit_;w.ctx.writeAudit_=()=>{throw new Error('nhật ký lỗi')};
+  eq(code(()=>call(w,'companyInitRollback_',w.U('kt2'),{reason:'lỗi nhật ký'})),'nhật ký lỗi');eq(w.props.MAINTENANCE,undefined,'lỗi giữa chừng không để kẹt chế độ bảo trì');w.ctx.writeAudit_=wa;
+});
+suite('9. Hiệu suất: currencyMap_ đọc danh mục MỘT lần cho nhiều lần gọi; ghi danh mục thì bản đệm được làm mới',()=>{
+  const w=world(),c=w.ctx;c.resetMemoDirect_();let reads=0;const ra=c.repoReadAll_;c.repoReadAll_=function(t){if(t==='Catalog')reads++;return ra.apply(this,arguments)};
+  const m1=c.currencyMap_();for(let i=0;i<2000;i++)c.currencyMap_();eq(reads,1,'2001 lần gọi chỉ đọc danh mục một lần');ok(m1===c.currencyMap_(),'cùng một bản đệm');eq(m1.VND.decimals,0);ok(!m1.USD);
+  c.repoAppend_('Catalog',[{version:1,isDeleted:0,commitState:'C',id:'c2',catalogType:'CURRENCY',code:'USD',name:'USD',attrsJson:JSON.stringify({decimals:2}),active:1,sortOrder:2}]);
+  eq(c.currencyMap_().USD.decimals,2,'thêm tiền tệ mới thì thấy ngay');
+  const t0=process.hrtime.bigint();for(let i=0;i<20000;i++)c.currencyMap_();ok(Number(process.hrtime.bigint()-t0)/1e6<500,'20.000 lần gọi dưới 0,5 giây');
+  c.repoReadAll_=ra;
+});
 console.log('Tổng kiểm tra:',steps);
