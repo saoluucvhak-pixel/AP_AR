@@ -51,4 +51,44 @@ suite('8. orderGet_ trả baseTotals (dữ liệu mô phỏng 3.000 chứng từ
   const {ctx}=makeEnv(SRCP);seed(ctx,300);const u={id:'u1',email:'a@x.vn',displayName:'A',role:'APPROVER',scope:{allPartners:true}},ord=ctx.repoValid_('Order')[0];
   const r=ctx.orderGet_(u,{requestId:'x',payload:{id:ord.id}});ok(r.order.baseTotals&&r.order.baseTotals.currency==='VND','có baseTotals');ok(Number.isInteger(r.order.baseTotals.margin));ok(r.order.totals,'totals từng tiền tệ vẫn còn');
 });
+// ---- R09 và orderTotals theo nguyên tắc "có hóa đơn mới ghi nhận" + phần quy đổi VND (thế giới giả, repo trong bộ nhớ)
+const vm=require('vm'),fs=require('fs');
+function world(){
+  const ctx=vm.createContext({console,Utilities:{getUuid:()=>'u',formatDate:()=>'2026-10-27'},LockService:{},CacheService:{getScriptCache:()=>({get:()=>null,put(){}})},PropertiesService:{getScriptProperties:()=>({getProperty:()=>null})}});
+  vm.runInContext(fs.readFileSync(SRCP,'utf8'),ctx);
+  const cat=(id,type,c,a)=>({id,catalogType:type,code:c,name:c,attrsJson:JSON.stringify(a||{}),active:1,sortOrder:1,version:1});
+  const sv=JSON.stringify([{code:'FWD',hsdvNo:'N1'}]);
+  const T={Catalog:[cat('c1','CURRENCY','VND',{decimals:0}),cat('c1b','CURRENCY','USD',{decimals:2}),cat('g','BUSINESS_GROUP','G1'),cat('s1','SERVICE_CODE','FWD',{department:'Forwarding'}),cat('f','FEE_TYPE','F')],
+    Partner:[{id:'p1',shortName:'LHT',legalName:'LHT',isCustomer:1,isSupplier:1,status:'ACTIVE',scopeTags:'',taxCode:''}],
+    Order:[{id:'o1',orderNo:'DH-1',poNo:'PO1',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-01-01',status:'OPEN',servicesJson:sv,serviceCode:'FWD',hsdvNo:'N1',version:1},
+           {id:'o2',orderNo:'DH-2',poNo:'PO2',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-01-01',status:'OPEN',servicesJson:sv,serviceCode:'FWD',hsdvNo:'N2',version:1}],
+    Accrual:[],AccrualSplit:[],DebtDoc:[],DebtLine:[],Config:[{id:'ledgerStartDate',value:'2026-01-01'}]};
+  ctx.repoValid_=t=>(T[t]||[]).slice();ctx.repoCommitted_=ctx.repoValid_;
+  return {ctx,T};
+}
+const ac=(id,o,kind,cur,net,status,docId,x)=>Object.assign({id,orderId:o,kind,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:0,currency:cur,status,docId:docId||'',debtLineId:'',serviceCode:'FWD',version:1},x||{});
+const full={id:'a',email:'a@x.vn',role:'APPROVER',scope:{allPartners:true}};
+const ddoc=(id,cur,rate)=>({id,docNo:id.toUpperCase(),direction:'AR',docType:'INVOICE',partnerId:'p1',currency:cur,businessGroupCode:'G1',docDate:'2026-10-01',postingDate:'2026-10-01',status:'POSTED',totalGrossMinor:1,fxRateE4:rate,version:1});
+suite('9. orderTotals: chỉ khoản đã lập hóa đơn vào doanh thu/chi phí/lãi; chưa/đang lập hóa đơn chỉ hiện ở cột HĐ',()=>{
+  const {ctx}=world(),L=[ac('a','o1','REVENUE','USD',193000,'INVOICED'),ac('b','o1','COST','USD',50000,'INVOICED'),ac('c','o1','REVENUE','USD',777700,'OPEN'),ac('d','o1','COST','USD',111100,'INVOICING'),ac('e','o1','COST','VND',40000000,'INVOICED')];
+  const t=ctx.orderTotals(L);eq([t.USD.revenueNet,t.USD.costNet,t.USD.margin,t.USD.marginPct],[193000,50000,143000,74.09]);eq([t.USD.uninvoicedRevenue,t.USD.invoicingCost],[777700,111100]);eq([t.VND.revenueNet,t.VND.costNet,t.VND.margin],[0,40000000,-40000000]);
+});
+suite('10. R09: cột doanh thu/chi phí/lãi chỉ gồm khoản đã ghi nhận; có phần "Quy đổi VND" theo tỷ giá chứng từ, không tính khoản chưa lập hóa đơn',()=>{
+  const {ctx,T}=world();T.DebtDoc.push(ddoc('d1','USD',253000),ddoc('d2','USD',254000));
+  T.Accrual.push(ac('a','o1','REVENUE','USD',193000,'INVOICED','d1'),ac('b','o1','COST','USD',50000,'INVOICED','d2'),ac('c','o1','REVENUE','USD',777700,'OPEN'),ac('e','o1','COST','VND',40000000,'INVOICED','d3'));
+  const rep=ctx.rep09_(full,'R09',{asOf:'2026-10-27'}),rows=rep.rows;
+  const usd=rows.find(r=>r.t==='total'&&r.currency==='USD').cells,vnd=rows.find(r=>r.t==='total'&&r.currency==='VND').cells;
+  eq([usd.rev,usd.cost,usd.margin,usd.unRev],[193000,50000,143000,777700],'USD: khoản OPEN không vào doanh thu');eq([vnd.rev,vnd.cost,vnd.margin],[0,40000000,-40000000]);
+  const g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.order));ok(g>0,'có nhóm quy đổi VND');
+  const tot=rows.slice(g).find(r=>r.t==='total').cells;eq(tot.order,'TỔNG QUY ĐỔI VND');eq(tot.rev,Math.round(1930*25.3));eq(tot.cost,Math.round(500*25.4)+40000000);eq(tot.margin,tot.rev-tot.cost);
+  const row=rows.slice(g).find(r=>r.t==='data').cells;eq([row.order,row.rev,row.cost],['DH-1',tot.rev,tot.cost],'một dòng cho đơn/mã dịch vụ, gộp mọi tiền tệ');eq(row.state,'Đủ dữ liệu');
+  ok(rows.slice(g).every(r=>r.currency==='VND'),'định dạng số theo VND');ok(rep.notes.some(n=>/Quy đổi VND/.test(n)),'có chú thích');
+  const only=ctx.rep09_(full,'R09',{asOf:'2026-10-27',currency:'USD'}).rows;ok(!only.some(r=>/Quy đổi VND/.test(r.cells.order||'')),'lọc một tiền tệ thì không hiện phần quy đổi');
+});
+suite('11. R09: chỉ VND thì không có phần quy đổi; chứng từ thiếu tỷ giá được báo ở cột tình trạng, khoản khác vẫn tính',()=>{
+  const a=world();a.T.Accrual.push(ac('a','o1','REVENUE','VND',1000,'INVOICED','d1'));ok(!a.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows.some(r=>/Quy đổi VND/.test(r.cells.order||'')),'đơn chỉ VND không có phần quy đổi');
+  const b=world();b.T.DebtDoc.push(ddoc('d1','USD',0),ddoc('d2','USD',250000));b.T.Accrual.push(ac('a','o1','REVENUE','USD',100000,'INVOICED','d1'),ac('b','o2','REVENUE','USD',100000,'INVOICED','d2'));
+  const rows=b.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows,g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.order)),tot=rows.slice(g).find(r=>r.t==='total').cells;
+  eq(tot.rev,25000,'chỉ chứng từ có tỷ giá được tính');ok(/Thiếu tỷ giá: 1/.test(tot.state),tot.state);ok(rows.slice(g).some(r=>r.t==='data'&&r.cells.order==='DH-1'&&/Thiếu tỷ giá/.test(r.cells.state)),'dòng của đơn thiếu tỷ giá được đánh dấu');
+});
 console.log('Tổng kiểm tra:',steps);

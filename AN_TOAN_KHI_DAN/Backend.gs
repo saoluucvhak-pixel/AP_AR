@@ -4389,7 +4389,8 @@ function orderTotals(accruals) {
         if (a.isPassThrough)
             t[rev ? 'passRevenue' : 'passCost'] += a.grossMinor;
         else {
-            t[rev ? 'revenueNet' : 'costNet'] += a.netMinor;
+            if (st === 'invoiced')
+                t[rev ? 'revenueNet' : 'costNet'] += a.netMinor;
             if (a.feeTypeCode === 'PASS_THROUGH')
                 t.passUnverified++;
         }
@@ -9104,7 +9105,7 @@ function accrualAt_(a, asOf, ctx) {
 }
 function rep09_(user, code, params) {
     var D = orderListData_(user, params.asOf, true), rep = newReport_(code, params, [col_('stt', 'STT', 'int', 'center'), col_('order', 'Đơn hàng'), col_('po', 'Số PO'), col_('customer', 'Khách hàng'), col_('svc', 'Mã dịch vụ'), col_('hsdv', 'Số HSDV'), col_('dept', 'Bộ phận thực hiện'),
-        col_('rev', 'Doanh thu dịch vụ (trước thuế)', 'money'), col_('cost', 'Chi phí dịch vụ (trước thuế)', 'money'), col_('margin', 'Lãi gộp dịch vụ', 'money'), col_('pct', 'Tỷ suất', 'text', 'right'),
+        col_('rev', 'Doanh thu dịch vụ đã ghi nhận (trước thuế)', 'money'), col_('cost', 'Chi phí dịch vụ đã ghi nhận (trước thuế)', 'money'), col_('margin', 'Lãi gộp dịch vụ (đã ghi nhận)', 'money'), col_('pct', 'Tỷ suất', 'text', 'right'),
         col_('passRev', 'Chi hộ (thu lại của khách)', 'money'), col_('passCost', 'Thu hộ (trả lại khách)', 'money'), col_('passGap', 'Chênh lệch hộ (chi hộ − thu hộ, chưa đối ứng)', 'money'), col_('state', 'Tình trạng số liệu'),
         col_('unRev', 'Doanh thu chưa lập HĐ (đã gồm thuế)', 'money'), col_('unCost', 'Chi phí chưa nhận HĐ (đã gồm thuế)', 'money'), col_('invRev', 'Doanh thu đang lập HĐ', 'money'), col_('invCost', 'Chi phí đang lập HĐ', 'money')]);
     var asOf = params.asOf, docById = accrualCtx_(), accBy = {};
@@ -9117,18 +9118,28 @@ function rep09_(user, code, params) {
     function stateOf(e) {
         if (e.hasRev && e.cost === 0)
             return 'Chưa đủ dữ liệu: chưa có chi phí';
-        if (e.un || e.unc || e.inv || e.invc || e.unv || e.passRev !== e.passCost)
-            return 'Lợi nhuận tạm tính' + (e.unv ? ' (có ' + e.unv + ' khoản chi hộ chờ xác minh)' : '') + (e.passRev !== e.passCost ? ' (số hộ chưa đối ứng)' : '');
-        return 'Đủ dữ liệu';
+        var parts = [];
+        if (e.un || e.unc || e.inv || e.invc)
+            parts.push('còn khoản chưa/đang lập hóa đơn (chưa tính vào lãi)');
+        if (e.unv)
+            parts.push(e.unv + ' khoản chi hộ chờ xác minh');
+        if (e.passRev !== e.passCost)
+            parts.push('số hộ chưa đối ứng');
+        return parts.length ? 'Lãi gộp theo khoản đã ghi nhận – ' + parts.join('; ') : 'Đủ dữ liệu';
     }
     function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? Math.round((e.rev - e.cost) * 10000 / e.rev) / 100 + '%' : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
-    var byCur = {}, n = 0;
+    var byCur = {}, n = 0, baseRows = [], accBase = byId_(repoValid_('Accrual'));
     rows.forEach(function (o) {
         var accs = accBy[o.id] || [], buckets = [];
         orderServices_(o).forEach(function (sv) { buckets.push({ code: sv.code, hsdv: sv.hsdvNo || '', list: accs.filter(function (a) { return !a.sharedFrom && accrualServiceCode_(a, o) === sv.code; }) }); });
         buckets.push({ code: '', hsdv: '', list: accs.filter(function (a) { return a.sharedFrom || !accrualServiceCode_(a, o); }) });
         buckets.forEach(function (bk) {
             var t = orderTotals(bk.list);
+            if (!params.currency) {
+                var bt = orderBaseTotals_(bk.list, asOf, docById, accBase);
+                if (bt.revenue || bt.cost || bt.missing)
+                    baseRows.push({ o: o, svc: bk.code, hsdv: bk.hsdv, dept: bk.code ? serviceDept_(bk.code) : '', bt: bt });
+            }
             Object.keys(t).forEach(function (c) {
                 if (params.currency && c !== params.currency)
                     return;
@@ -9169,13 +9180,51 @@ function rep09_(user, code, params) {
             addRow_(rep, 'subtotal', out(perCode[k], { order: k || '(chưa gắn mã / chi phí chung / chia nhiều đơn)', svc: k || '—', dept: k ? serviceDept_(k) || '—' : '—' }), c);
         });
     });
+    if (!params.currency && Object.keys(byCur).some(function (c) { return c !== BASE_CUR_; })) {
+
+        addRow_(rep, 'group', { order: 'Quy đổi ' + BASE_CUR_ + ' – chỉ khoản đã ghi nhận, theo tỷ giá lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
+        var BT = zero(), perB = {}, orderB = [], nb = 0, missB = 0;
+        function eb(bt) { var e = zero(); e.rev = bt.revenue; e.cost = bt.cost; e.hasRev = bt.revenue > 0; return e; }
+        function stB(cells, miss) { if (miss)
+            cells.state = 'Thiếu tỷ giá: ' + miss + ' khoản đã ghi nhận chưa được tính'; return cells; }
+        baseRows.forEach(function (x) {
+            addRow_(rep, 'data', stB(out(eb(x.bt), { stt: ++nb, order: x.o.orderNo, po: x.o.poNo || '—', customer: partnerName_(D.pm, x.o.customerPartnerId), svc: x.svc || '(chưa gắn mã)', hsdv: x.hsdv || '—', dept: x.dept || '—' }), x.bt.missing), BASE_CUR_);
+            BT.rev += x.bt.revenue;
+            BT.cost += x.bt.cost;
+            missB += x.bt.missing;
+            var k = x.svc || '', pe = perB[k] = perB[k] || (orderB.push(k), zero());
+            pe.rev += x.bt.revenue;
+            pe.cost += x.bt.cost;
+            pe.hasRev = pe.hasRev || x.bt.revenue > 0;
+        });
+        if (genAll.length) {
+            var gb = orderBaseTotals_(genAll.map(function (x) { return x.a; }), asOf, docById, accBase);
+            if (gb.revenue || gb.cost || gb.missing) {
+                addRow_(rep, 'data', stB(out(eb(gb), { stt: ++nb, order: 'Chi phí chung', po: '—', customer: '(không thuộc đơn hàng)', svc: '(chưa gắn mã)', hsdv: '—', dept: '—' }), gb.missing), BASE_CUR_);
+                BT.rev += gb.revenue;
+                BT.cost += gb.cost;
+                missB += gb.missing;
+                var pg = perB[''] = perB[''] || (orderB.push(''), zero());
+                pg.rev += gb.revenue;
+                pg.cost += gb.cost;
+            }
+        }
+        BT.hasRev = BT.rev > 0;
+        addRow_(rep, 'total', stB(out(BT, { order: 'TỔNG QUY ĐỔI ' + BASE_CUR_ }), missB), BASE_CUR_);
+        addRow_(rep, 'group', { order: 'Tổng hợp theo mã dịch vụ – quy đổi ' + BASE_CUR_ }, BASE_CUR_);
+        orderB.sort().forEach(function (k) {
+            addRow_(rep, 'subtotal', out(perB[k], { order: k || '(chưa gắn mã / chi phí chung / chia nhiều đơn)', svc: k || '—', dept: k ? serviceDept_(k) || '—' : '—' }), BASE_CUR_);
+        });
+    }
     if (!rep.rows.length)
         rep.notes.push('Chưa có đơn hàng/khoản phát sinh trong bộ lọc.');
     rep.notes.push('Tính tại ngày chốt ' + asOf + ': chỉ gồm đơn hàng và khoản phát sinh có ngày đến ngày này. Khoản đã hủy vẫn được tính tại các ngày chốt trước ngày hủy (ngày hủy được lưu từ bản này; khoản hủy từ bản cũ chưa có ngày hủy nên vẫn bị loại ở mọi ngày chốt). Khoản đã lập hóa đơn tính theo ngày ghi nhận hóa đơn (ghi nhận sau ngày chốt thì tại ngày chốt vẫn là "chưa lập HĐ").');
     rep.notes.push('Trạng thái hóa đơn: "chưa lập HĐ" (OPEN) + "đang lập HĐ" (hóa đơn nháp/chờ duyệt, INVOICING) + "đã ghi nhận công nợ" (INVOICED) = tổng khoản hợp lệ; các cột HĐ là số đã gồm thuế và gồm cả khoản hộ vì vẫn là nghĩa vụ phải thu/phải trả.');
     rep.notes.push('Doanh thu dịch vụ và chi phí dịch vụ KHÔNG gồm thu hộ/chi hộ. Chi hộ (phải thu lại của khách) và thu hộ (phải trả lại khách) hiện ở cột riêng; "Chênh lệch hộ" = chi hộ − thu hộ là số hộ chưa đối ứng, không phải lợi nhuận và không tự đưa vào lãi gộp. Chi phí loại "Chi hộ" nhưng chưa đánh dấu chi hộ được nêu là "chờ xác minh" ở cột tình trạng.');
     rep.notes.push('Mỗi đơn được tách theo mã dịch vụ của khoản (mỗi mã một dòng, kèm số HSDV và bộ phận thực hiện); khoản chia cho nhiều đơn, chi phí chung và khoản cũ chưa gắn mã nằm ở dòng "chưa gắn mã". Cuối mỗi tiền tệ có bảng tổng hợp theo mã. Lãi gộp tính theo từng tiền tệ, không quy đổi hay cộng chéo VND với USD.');
-    rep.notes.push('Tình trạng số liệu: "Chưa đủ dữ liệu" khi có doanh thu dịch vụ nhưng chưa có chi phí dịch vụ; "Lợi nhuận tạm tính" khi còn khoản chưa/đang lập hóa đơn, số hộ chưa đối ứng hoặc chi hộ chờ xác minh.');
+    rep.notes.push('Doanh thu, chi phí và lãi gộp CHỈ tính khoản đã lập hóa đơn (đã ghi nhận); khoản chưa/đang lập hóa đơn chưa là doanh thu/chi phí ghi nhận nên không vào lãi (xem các cột HĐ). Tình trạng số liệu: "Chưa đủ dữ liệu" khi có doanh thu dịch vụ nhưng chưa có chi phí dịch vụ; "Lãi gộp theo khoản đã ghi nhận – …" khi còn khoản chưa/đang lập hóa đơn, số hộ chưa đối ứng hoặc chi hộ chờ xác minh.');
+    if (!params.currency)
+        rep.notes.push('Phần "Quy đổi VND" (tham khảo, hiện khi có tiền tệ khác VND): chỉ khoản đã ghi nhận, mỗi lần ghi nhận (hóa đơn gốc và từng điều chỉnh) quy đổi theo tỷ giá đã lưu trên chính chứng từ đó; khoản đã ghi nhận mà chứng từ chưa có tỷ giá không được tính và ghi ở cột Tình trạng. Chọn một tiền tệ cụ thể thì không hiện phần này.');
     rep.signatures = true;
     return rep;
 }

@@ -36,11 +36,11 @@ assert.ok(r5('2026-10-25').rows.some(r=>/Điều chỉnh/.test(r.cells.desc||'')
 // ---- R09
 const r9=(asOf)=>{const rep=ctx.rep09_(full,'R09',{asOf});return rep.rows.filter(r=>r.t==='data')[0].cells};
 let c=r9('2026-10-25');
-assert.deepStrictEqual([c.rev,c.cost,c.unRev,c.unCost],[1000,400,0,440],'R09 tại 25/10');
+assert.deepStrictEqual([c.rev,c.cost,c.unRev,c.unCost],[1000,0,0,440],'R09 tại 25/10: chi phí c2 chưa lập hóa đơn → chưa vào chi phí ghi nhận, nằm ở cột chưa nhận HĐ');
 c=r9('2026-02-07'); // hóa đơn ghi nhận 10/02 chưa xảy ra
-assert.deepStrictEqual([c.rev,c.cost,c.unRev,c.unCost],[1000,0,1100,0],'R09 tại 07/02');
+assert.deepStrictEqual([c.rev,c.cost,c.unRev,c.unCost],[0,0,1100,0],'R09 tại 07/02: hóa đơn chưa ghi nhận → doanh thu chưa vào, còn ở cột chưa lập HĐ');
 c=r9('2026-12-31');
-assert.deepStrictEqual([c.rev,c.cost],[1500,400],'R09 tại 31/12');
+assert.deepStrictEqual([c.rev,c.cost],[1000,0],'R09 tại 31/12: chỉ khoản đã lập hóa đơn (c3 và c2 chưa lập HĐ không vào)');
 assert.ok(ctx.rep09_(full,'R09',{asOf:'2026-10-25'}).columns.some(x=>/đã gồm thuế/.test(x.label)),'nhãn cột');
 // ---- R06
 const rep6=ctx.rep06_(full,'R06',{partnerId:'p1',from:'2026-01-01',to:'2026-10-25',asOf:'2026-10-25'});
