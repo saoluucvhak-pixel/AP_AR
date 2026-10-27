@@ -87,7 +87,7 @@ if(process.env.SHOTS_DIR){const dir=process.env.SHOTS_DIR,tag=process.env.SHOTS_
   await browser.close();console.log('đã chụp',tag);return;}
 await suite('1. Mọi menu dựng xong, không lỗi JS/console; tên menu một dòng',async()=>{
   const w=build(),{pg,errs,calls}=await newPage(browser,w);
-  const acts=calls.map(c=>c.action);eq(acts.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+acts.join(','));eq(acts[0],'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status'].indexOf(x.action)<0))&&!acts.includes('dashboard.summary'),'khởi động không chờ batch tính số liệu nặng (chỉ cho phép lô huy hiệu nhẹ chạy sau)');ok(acts.includes('workbench.summary'),'tổng hợp tải riêng sau bootstrap');await go(pg,'#/workbench',700);
+  const subs=calls.flatMap(c=>c.action==='sys.batch'?(c.payload.calls||[]).map(x=>x.action):[c.action]),acts=calls.map(c=>c.action);eq(subs.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+subs.join(','));eq(calls[0].action==='sys.batch'?calls[0].payload.calls[0].action:calls[0].action,'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!subs.includes('dashboard.summary')&&!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status','app.bootstrap','workbench.summary'].indexOf(x.action)<0)),'khởi động không chờ batch tính số liệu nặng (chỉ bootstrap + tổng hợp Bàn làm việc, lô huy hiệu nhẹ chạy sau)');ok(subs.includes('workbench.summary'),'tổng hợp Bàn làm việc có tải ở khởi động (đi cùng lượt bootstrap)');await go(pg,'#/workbench',700);
   const links=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].map(a=>a.getAttribute('href')));ok(links.length>=10,'có menu: '+links.length);
   for(const l of links){if(/#\/(audit|backup)$/.test(l))continue;await go(pg,l,450);const bad=await pg.evaluate(()=>{const e=document.querySelector('.msg.danger,.error-box');return e?e.innerText.slice(0,120):''});if(bad&&!/flow|Luồng/i.test(l))errs.push(l+' → '+bad)}
   const wrapped=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].filter(a=>a.getBoundingClientRect().height>44).map(a=>a.textContent.trim()));
@@ -758,6 +758,20 @@ await suite('37. R35: tờ báo cáo giữ giấy trắng chữ đen khi giao di
   ['g','s','t'].forEach(k=>{ok(r[k].bg>200,'nền sáng ở dòng '+k+': '+JSON.stringify(r[k]));ok(r[k].fg<120,'chữ tối ở dòng '+k)});
   await pg.hover('.report tbody tr:nth-child(3) td');await pg.waitForTimeout(150);const hv=await pg.evaluate(()=>{const cs=getComputedStyle(document.getElementById('d'));const m=cs.backgroundColor.match(/\d+/g).map(Number);return m[0]+m[1]+m[2]});ok(hv>600,'di chuột không làm nền tối: '+hv);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('38. Khởi động: bootstrap + tổng hợp Bàn làm việc đi chung MỘT lượt sys.batch; Bàn làm việc dùng lại kết quả nạp trước, không gọi lại workbench.summary',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);
+  const first=calls[0];eq(first.action,'sys.batch','lượt đầu là sys.batch');eq(first.payload.calls.map(c=>c.action),['app.bootstrap','workbench.summary']);
+  eq(calls.filter(c=>c.action==='app.bootstrap').length,0,'không còn gọi app.bootstrap riêng');eq(calls.filter(c=>c.action==='workbench.summary').length,0,'Bàn làm việc không gọi lại workbench.summary');
+  ok(await pg.locator('.wb').count()>0,'Bàn làm việc hiển thị');ok(await pg.locator('.wb-todo .skeleton').count()===0,'khung chờ được thay bằng nội dung (không treo khi dữ liệu nạp trước trả về ngay)');
+  await pg.close();
+});
+await suite('39. Khởi động: lỗi trong lượt gộp (bootstrap không dùng được) → lùi về gọi app.bootstrap riêng; người dùng không có quyền vẫn thấy thông báo lỗi đăng nhập',async()=>{
+  const w=build();const cu=w.ctx.appBootstrap_;let n=0;w.ctx.routes_()['app.bootstrap'].fn=function(){n++;if(n===1)throw Object.assign(new Error('tạm lỗi'),{code:'INTERNAL_ERROR',userMessage:'tạm lỗi'});return cu.apply(this,arguments)};
+  const {pg,errs,calls}=await newPage(browser,w);await pg.waitForTimeout(2500);
+  ok(calls.some(c=>c.action==='app.bootstrap'),'lùi về app.bootstrap riêng khi lượt gộp lỗi');ok(await pg.locator('.wb').count()>0,'vẫn vào được Bàn làm việc');await pg.close();
+  const w2=build();w2.ctx.routes_()['app.bootstrap'].fn=function(){throw Object.assign(new Error('FORBIDDEN'),{code:'FORBIDDEN',userMessage:'Không có quyền'})};
+  const p2=await newPage(browser,w2);ok(await p2.pg.locator('.splash-card').count()>0,'hiện thông báo không đăng nhập được');await p2.pg.close();
 });
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}

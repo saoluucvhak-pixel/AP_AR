@@ -663,7 +663,8 @@ function api(action, payload, opt) {
     if (PRIME_[key] !== undefined) {
         var primed = PRIME_[key];
         delete PRIME_[key];
-        return Promise.resolve(JSON.parse(JSON.stringify(primed)));
+        // Trả sau một nhịp (macrotask): màn hình gọi api() khi còn đang dựng, kiểm tra root.isConnected ở then() phải thấy khung đã gắn vào trang.
+        return new Promise(function (res) { setTimeout(function () { res(JSON.parse(JSON.stringify(primed))); }, 0); });
     }
     if (cur)
         return cur.then(function (x) { return x === undefined ? x : JSON.parse(JSON.stringify(x)); });
@@ -1331,8 +1332,25 @@ async function boot() {
     themeInit();
     skinInit();
     try {
-        // Menu tải sau bootstrap; tổng hợp Bàn làm việc tải riêng.
-        S.boot = await api('app.bootstrap');
+        // Một lượt qua Gateway (~1 giây mỗi lượt) cho cả bootstrap và tổng hợp Bàn làm việc (màn hình mặc định); kết quả tổng hợp được nạp trước, hết hạn sau 15 giây nếu không ai dùng.
+        var pre = null;
+        try {
+            pre = await apiRun('sys.batch', { calls: [{ action: 'app.bootstrap', payload: {} }, { action: 'workbench.summary', payload: {} }] }, {});
+        }
+        catch (e) {
+            if (e && (e.code === 'FORBIDDEN' || e.code === 'UNAUTHENTICATED'))
+                throw e;
+        }
+        if (pre && pre[0] && pre[0].ok) {
+            S.boot = pre[0].data;
+            if (pre[1] && pre[1].ok) {
+                var pk = READ_EPOCH + '|workbench.summary|' + JSON.stringify({ asOf: S.boot.today });
+                PRIME_[pk] = pre[1].data;
+                setTimeout(function () { delete PRIME_[pk]; }, 15000);
+            }
+        }
+        else
+            S.boot = await api('app.bootstrap');
         S.asOf = S.boot.today;
         lastHash = '';
         window.addEventListener('hashchange', route);
