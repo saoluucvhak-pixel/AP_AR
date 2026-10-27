@@ -1,0 +1,8 @@
+{
+  "ok_comments_strings.js": { "ok": true },
+  "bad_bigint.js": { "ok": false, "line": 3 },
+  "bad_nullish.js": { "ok": false, "line": 2 },
+  "bad_optional_chain.js": { "ok": false, "line": 3 },
+  "bad_numeric_separator.js": { "ok": false, "line": 1 },
+  "bad_after_comments.js": { "ok": false, "line": 6 }
+}

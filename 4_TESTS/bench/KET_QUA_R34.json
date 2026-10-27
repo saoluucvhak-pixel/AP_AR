@@ -1,0 +1,82 @@
+{
+ "N": 3000,
+ "R": 7,
+ "note": "giả lập",
+ "out": [
+  {
+   "name": "FULL (hiện tại)",
+   "gap": "",
+   "equal": true,
+   "rows": [
+    {
+     "label": "FULL (hiện tại)",
+     "mode": "cold",
+     "reads": 13,
+     "cells": 515682,
+     "msP50": 1212,
+     "msMin": 1019,
+     "msMax": 1381,
+     "samples": 7,
+     "by": {
+      "Partner": 1740,
+      "DebtDoc": 132000,
+      "DebtLine": 252000,
+      "Allocation": 66930,
+      "Order": 5400,
+      "Accrual": 52380,
+      "AccrualSplit": 5232
+     },
+     "total": 1500
+    },
+    {
+     "label": "FULL (hiện tại)",
+     "mode": "coldcache",
+     "reads": 13,
+     "cells": 515682,
+     "msP50": 1330,
+     "msMin": 1157,
+     "msMax": 1430,
+     "samples": 7,
+     "by": {
+      "Partner": 1740,
+      "DebtDoc": 132000,
+      "DebtLine": 252000,
+      "Allocation": 66930,
+      "Order": 5400,
+      "Accrual": 52380,
+      "AccrualSplit": 5232
+     },
+     "total": 1500
+    },
+    {
+     "label": "FULL (hiện tại)",
+     "mode": "warm",
+     "reads": 0,
+     "cells": 0,
+     "msP50": 118,
+     "msMin": 113,
+     "msMax": 144,
+     "samples": 7,
+     "by": {},
+     "total": 1500
+    },
+    {
+     "label": "FULL (hiện tại)",
+     "mode": "afterwrite",
+     "reads": 3,
+     "cells": 450930,
+     "msP50": 989,
+     "msMin": 888,
+     "msMax": 1231,
+     "samples": 7,
+     "by": {
+      "DebtDoc": 132000,
+      "DebtLine": 252000,
+      "Allocation": 66930
+     },
+     "total": 1500
+    }
+   ]
+  }
+ ]
+}

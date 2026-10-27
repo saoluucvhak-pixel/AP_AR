@@ -1,0 +1,9 @@
+{
+  "name": "acorn",
+  "version": "8.18.0",
+  "file": "acorn-8.18.0.js",
+  "sha256": "fc3ed7b81e58464715d0291402892f22c3d86ea75302645a330390f85d8015c9",
+  "license": "MIT (acorn-LICENSE.txt)",
+  "source": "npm registry package acorn@8.18.0, dist/acorn.js (UMD, không phụ thuộc)",
+  "policy": "ecmaVersion 2019 (mức tương thích bảo thủ của dự án; KHÔNG chứng minh tương thích đầy đủ với Apps Script)"
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HDon>
+<DLHDon Id="data">
+<TTChung><PBan>2.1.0</PBan><THDon>Hóa đơn giá trị gia tăng</THDon><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>123</SHDon><NLap>2026-10-05</NLap><DVTTe>VND</DVTTe><TGia>1</TGia></TTChung>
+<NDHDon>
+<NBan><Ten>CÔNG TY TNHH GLOBAL MULTI LOGISTICS</Ten><MST>0312345678</MST><DChi>TP.HCM</DChi></NBan>
+<NMua><Ten>CÔNG TY ABC</Ten><MST>0101234567-001</MST></NMua>
+<DSHHDVu>
+<HHDVu><TChat>1</TChat><STT>1</STT><THHDVu>Cước vận chuyển hàng từ Cát Lái đi An Thới &amp; phí</THHDVu><DVTinh>chuyến</DVTinh><SLuong>2</SLuong><DGia>5000000</DGia><ThTien>10000000</ThTien><TSuat>8%</TSuat></HHDVu>
+<HHDVu><TChat>1</TChat><STT>2</STT><THHDVu>Phí thủ tục hải quan</THHDVu><ThTien>1500000</ThTien><TSuat>KCT</TSuat></HHDVu>
+<HHDVu><TChat>4</TChat><STT>3</STT><THHDVu>Ghi chú</THHDVu></HHDVu>
+</DSHHDVu>
+<TToan><TgTCThue>11500000</TgTCThue><TgTThue>800000</TgTThue><TgTTTBSo>12300000</TgTTTBSo></TToan>
+</NDHDon></DLHDon><MCCQT>ABCDEF123456</MCCQT></HDon>
