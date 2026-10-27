@@ -79,16 +79,16 @@ suite('10. R09: cột doanh thu/chi phí/lãi chỉ gồm khoản đã ghi nhậ
   const rep=ctx.rep09_(full,'R09',{asOf:'2026-10-27'}),rows=rep.rows;
   const usd=rows.find(r=>r.t==='total'&&r.currency==='USD').cells,vnd=rows.find(r=>r.t==='total'&&r.currency==='VND').cells;
   eq([usd.rev,usd.cost,usd.margin,usd.unRev],[193000,50000,143000,777700],'USD: khoản OPEN không vào doanh thu');eq([vnd.rev,vnd.cost,vnd.margin],[0,40000000,-40000000]);
-  const g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.order));ok(g>0,'có nhóm quy đổi VND');
+  const g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.stt));ok(g>0,'có nhóm quy đổi VND (nhãn ở cột đầu để giao diện hiện được)');ok(rows.filter(r=>r.t==='group').every(r=>r.cells.stt),'mọi dòng nhóm có nhãn ở cột đầu (stt)');
   const tot=rows.slice(g).find(r=>r.t==='total').cells;eq(tot.order,'TỔNG QUY ĐỔI VND');eq(tot.rev,Math.round(1930*25.3));eq(tot.cost,Math.round(500*25.4)+40000000);eq(tot.margin,tot.rev-tot.cost);
   const row=rows.slice(g).find(r=>r.t==='data').cells;eq([row.order,row.rev,row.cost],['DH-1',tot.rev,tot.cost],'một dòng cho đơn/mã dịch vụ, gộp mọi tiền tệ');eq(row.state,'Đủ dữ liệu');
   ok(rows.slice(g).every(r=>r.currency==='VND'),'định dạng số theo VND');ok(rep.notes.some(n=>/Quy đổi VND/.test(n)),'có chú thích');
-  const only=ctx.rep09_(full,'R09',{asOf:'2026-10-27',currency:'USD'}).rows;ok(!only.some(r=>/Quy đổi VND/.test(r.cells.order||'')),'lọc một tiền tệ thì không hiện phần quy đổi');
+  const only=ctx.rep09_(full,'R09',{asOf:'2026-10-27',currency:'USD'}).rows;ok(!only.some(r=>/Quy đổi VND/.test(r.cells.stt||'')),'lọc một tiền tệ thì không hiện phần quy đổi');
 });
 suite('11. R09: chỉ VND thì không có phần quy đổi; chứng từ thiếu tỷ giá được báo ở cột tình trạng, khoản khác vẫn tính',()=>{
-  const a=world();a.T.Accrual.push(ac('a','o1','REVENUE','VND',1000,'INVOICED','d1'));ok(!a.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows.some(r=>/Quy đổi VND/.test(r.cells.order||'')),'đơn chỉ VND không có phần quy đổi');
+  const a=world();a.T.Accrual.push(ac('a','o1','REVENUE','VND',1000,'INVOICED','d1'));ok(!a.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows.some(r=>/Quy đổi VND/.test(r.cells.stt||'')),'đơn chỉ VND không có phần quy đổi');
   const b=world();b.T.DebtDoc.push(ddoc('d1','USD',0),ddoc('d2','USD',250000));b.T.Accrual.push(ac('a','o1','REVENUE','USD',100000,'INVOICED','d1'),ac('b','o2','REVENUE','USD',100000,'INVOICED','d2'));
-  const rows=b.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows,g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.order)),tot=rows.slice(g).find(r=>r.t==='total').cells;
+  const rows=b.ctx.rep09_(full,'R09',{asOf:'2026-10-27'}).rows,g=rows.findIndex(r=>r.t==='group'&&/Quy đổi VND/.test(r.cells.stt)),tot=rows.slice(g).find(r=>r.t==='total').cells;
   eq(tot.rev,25000,'chỉ chứng từ có tỷ giá được tính');ok(/Thiếu tỷ giá: 1/.test(tot.state),tot.state);ok(rows.slice(g).some(r=>r.t==='data'&&r.cells.order==='DH-1'&&/Thiếu tỷ giá/.test(r.cells.state)),'dòng của đơn thiếu tỷ giá được đánh dấu');
 });
 console.log('Tổng kiểm tra:',steps);
