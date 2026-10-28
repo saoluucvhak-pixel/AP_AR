@@ -880,6 +880,18 @@ await suite('49. Menu Tỷ giá có ô tỷ giá mua/bán; lưu gửi buy/sell l
   await fld('Tỷ giá mua của ngân hàng').locator('input').fill('25.150');await fld('Tỷ giá bán của ngân hàng').locator('input').fill('25.250');await pg.getByText('Lưu tỷ giá nhập tay').first().click();await pg.waitForTimeout(900);
   const sv=last(calls,'fx.save');ok(sv,'đã gửi fx.save');eq([sv.payload.buy,sv.payload.sell],['25150','25250']);eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('50. Chứng từ ngoại tệ hiện thành tiền quy đổi VND: cột ở danh sách, thẻ ở chi tiết, dòng tạm tính ở form nhập; chứng từ thiếu tỷ giá báo thiếu',async()=>{
+  const w=build(),d2=w.T.DebtDoc.find(x=>x.id==='d2');d2.fxRateE4=253000;d2.direction='AR';d2.status='POSTED';
+  const {pg,errs}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/docs/AR',1000);
+  let tx=await pg.locator('main, #main').first().innerText();ok(/Quy đổi VND/.test(tx),'có cột Quy đổi VND: '+tx.slice(0,200));ok(/1\.265/.test(tx),'50,00 USD × 25,30 = 1.265 VND: '+tx.slice(0,600));
+  await go(pg,'#/doc/d2',900);tx=await pg.locator('[data-doc-book]').innerText();ok(/1\.265/.test(tx)&&/25,3/.test(tx),'thẻ chi tiết: '+tx);ok(/R13|tỷ giá ghi nhận/.test(tx),'có diễn giải');
+  const w2=build(),e2=w2.T.DebtDoc.find(x=>x.id==='d2');e2.fxRateE4=0;e2.direction='AR';e2.status='POSTED';const p2=await newPage(browser,w2);await p2.pg.evaluate(()=>{S.dirty=false});await go(p2.pg,'#/doc/d2',900);
+  tx=await p2.pg.locator('[data-doc-book]').innerText();ok(/Chưa có tỷ giá/.test(tx),'thiếu tỷ giá: '+tx);await go(p2.pg,'#/docs/AR',900);ok(/Thiếu tỷ giá/.test(await p2.pg.locator('#main').innerText()),'danh sách: thiếu tỷ giá');await p2.pg.close();
+  await go(pg,'#/doc/new?dir=AR',900);ok(await pg.locator('[data-form-book]').count()===0,'VND: không hiện dòng quy đổi');
+  await pg.locator('[data-path=currency]').selectOption('USD');await pg.waitForTimeout(300);tx=await pg.locator('[data-form-book]').innerText();ok(/chưa nhập tỷ giá/.test(tx),'USD chưa có tỷ giá: '+tx);
+  await pg.locator('[data-path=fxRate]').fill('25,3');await pg.waitForTimeout(300);tx=await pg.locator('[data-form-book]').innerText();ok(/Quy đổi VND \(tạm tính\)/.test(tx)&&/25,3/.test(tx),'có tỷ giá: '+tx);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

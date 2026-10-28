@@ -2766,6 +2766,13 @@ function docOrderIndex_(user, lines, ctx) {
     Object.keys(out).forEach(function (k) { res[k] = { orders: Object.keys(out[k].o).map(function (i) { return out[k].o[i]; }), poRefs: Object.keys(out[k].r), restricted: out[k].restricted }; });
     return res;
 }
+
+function docBookOut_(d, led, b, posted) {
+    if (d.currency === BASE_CUR_)
+        return { baseCur: null, baseRate: '', baseRateStored: false, baseGrossMinor: null, baseOutMinor: null, baseMissing: false };
+    var bc = led.bc_ || (led.bc_ = bookCtx_()), g = bookOfLine_(bc, d, posted ? b.gross + b.adjust : d.totalGrossMinor), o = posted ? bookOfLine_(bc, d, b.out) : null, e4 = bookDocRate_(bc, d);
+    return { baseCur: BASE_CUR_, baseRate: e4 > 0 ? fxText_(e4) : '', baseRateStored: d.fxRateE4 > 0, baseGrossMinor: g, baseOutMinor: o, baseMissing: g === null };
+}
 function docRowOut_(d, led, sfMap, lineByDoc, ox) {
     var b = led.bal.byDoc[d.id], lines = lineByDoc[d.id] || [], posted = !!b;
     var bk = posted && b.out > 0 ? agingBucket(d.dueDate, led.asOf) : '';
@@ -2773,7 +2780,7 @@ function docRowOut_(d, led, sfMap, lineByDoc, ox) {
         currency: d.currency, group: d.businessGroupCode, docDate: d.docDate, invoiceNo: d.invoiceNo, dueDate: d.dueDate, status: d.status,
         totalGrossMinor: posted ? b.gross + b.adjust : d.totalGrossMinor, allocatedMinor: posted ? b.alloc : 0, outstandingMinor: posted ? b.out : null,
         payStatus: posted ? b.status : '', aging: bk, statusNote: d.statusNote, batchLabel: d.batchLabel, isOpening: d.isOpening,
-        services: serviceCodesOfDoc_(lines), orders: ox && ox[d.id] ? ox[d.id].orders.slice(0, 6) : [], orderCount: ox && ox[d.id] ? ox[d.id].orders.length : 0, ordersRestricted: !!(ox && ox[d.id] && ox[d.id].restricted), poRefs: ox && ox[d.id] ? ox[d.id].poRefs.slice(0, 4) : [], warnings: docWarnings_(d, lines, b), createdBy: d.createdBy, version: d.version };
+        services: serviceCodesOfDoc_(lines), orders: ox && ox[d.id] ? ox[d.id].orders.slice(0, 6) : [], orderCount: ox && ox[d.id] ? ox[d.id].orders.length : 0, ordersRestricted: !!(ox && ox[d.id] && ox[d.id].restricted), poRefs: ox && ox[d.id] ? ox[d.id].poRefs.slice(0, 4) : [], warnings: docWarnings_(d, lines, b), createdBy: d.createdBy, version: d.version, bk: docBookOut_(d, led, b, posted) };
 }
 function validateListDates_(p) {
     ['from', 'to'].forEach(function (key) { if (p[key] && !isDate_(p[key]))
