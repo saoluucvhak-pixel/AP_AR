@@ -258,4 +258,14 @@ suite('J. Danh sách chi phí chờ phân bổ',()=>{
   const all=w.ctx.accrualList_(full,{payload:{kind:'COST'}}),wt=w.ctx.accrualList_(full,{payload:{kind:'COST',waiting:true}});
   eq(all.total,4);eq(wt.waitingCount,2);eq(wt.items.map(x=>x.id).sort().join(),'general,nocode','chỉ chi phí chung và chi phí chưa gắn mã nằm trong danh sách chờ; khoản đã chia/đã gắn mã thì không');
 });
+suite('R36: một hóa đơn thật lập thành nhiều chứng từ (chọn các khoản của đơn làm nhiều lần) không bị báo nghi trùng; khác ngày hóa đơn vẫn báo',()=>{
+  const w=world('2026-10-23'),mk=(id,k)=>({id,orderId:'o1',kind:k,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:'F',description:'x',netMinor:500,vatMode:'NONE',vatMinor:0,grossMinor:500,isPassThrough:0,currency:'VND',status:'OPEN',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
+  w.T.Order.push({id:'o1',orderNo:'DH-1',poNo:'P1',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-10-01',status:'OPEN',servicesJson:J([{code:'FWD',hsdvNo:'N1'}]),serviceCode:'FWD',hsdvNo:'N1',version:1});
+  ['a1','a2','a3','a4'].forEach(id=>w.T.Accrual.push(mk(id,'REVENUE')));
+  const inv=(ids,no,dt)=>{call(w,'accrualInvoice_',full,{accrualIds:ids,invoiceNo:no,invoiceDate:dt,docDate:dt});return w.T.DebtDoc[w.T.DebtDoc.length-1]};
+  const d1=inv(['a1'],'HD1','2026-10-10'),d2=inv(['a2'],'HD1','2026-10-10'),d3=inv(['a3'],'HD1','2026-10-10');
+  eq(d1.warningsJson||'','');eq(d2.warningsJson||'','','khoản thứ hai cùng số HĐ, cùng ngày HĐ: không nghi trùng');eq(d3.warningsJson||'','');
+  const d4=inv(['a4'],'HD1','2026-10-12');ok(/Cùng số hóa đơn/.test(d4.warningsJson||''),'khác ngày hóa đơn: vẫn nghi trùng');
+  const dup=w.ctx.findDuplicateDocs_(Object.assign({},d1,{id:undefined,source:'MANUAL'}),w.T.DebtDoc,null);ok(dup.length>=1,'lập tay (không qua khoản phát sinh) vẫn báo trùng');
+});
 console.log('Kiểm thử bổ sung F–J xong; tổng',steps,'khẳng định');

@@ -83,4 +83,12 @@ suite('10. Tỷ giá mua/bán: phải thu đánh giá lại theo MUA, phải tr�
   fx.sellE4=0;rv=c.fxRevalLines_(full,ASOF,{});ok(rv.midFallback.some(x=>/phải trả USD/.test(x)),'có mua, thiếu bán → cảnh báo phải trả');eq(rv.items.find(a=>a.dir==='AP').basis,'MID');fx.sellE4=252600;
   const r14=c.rep14_(full,'R14',{asOf:ASOF}),R=rows(r14),a=R.find(x=>x.dir==='Phải thu');ok(/\(mua\)/.test(a.rate)&&/\(bán\)/.test(R.find(x=>x.dir==='Phải trả').rate),'cột tỷ giá ghi mua/bán: '+a.rate);ok(/300/.test(a.unconv),'cột chưa quy đổi: '+a.unconv);
 });
+suite('11. Dòng chứng từ (doc.list/doc.get) có giá trị ghi sổ VND: khớp lõi quy đổi; chứng từ VND không có; thiếu tỷ giá → baseMissing',()=>{
+  const w=world(),c=w.ctx,l=led(w),bc=c.bookCtx_(),byDoc=c.groupBy_?c.groupBy_(l.lines,x=>x.docId):{};let foreign=0,missing=0,vnd=0;
+  l.docs.forEach(d=>{const b=l.bal.byDoc[d.id];if(!b)return;const r=c.docRowOut_(d,l,null,byDoc,null),k=r.bk;
+    if(d.currency==='VND'){vnd++;eq(k.baseCur,null);eq(k.baseGrossMinor,null);return}
+    foreign++;eq(k.baseCur,'VND');const g=c.bookOfLine_(bc,d,b.gross+b.adjust),o=c.bookOfLine_(bc,d,b.out);eq(k.baseGrossMinor,g,d.id+' tổng');eq(k.baseOutMinor,o,d.id+' còn lại');eq(k.baseMissing,g===null);if(g===null)missing++;else ok(k.baseRate,'có tỷ giá hiển thị');eq(k.baseRateStored,d.fxRateE4>0)});
+  ok(foreign>=3&&vnd>=1,'có cả chứng từ ngoại tệ và VND: '+foreign+'/'+vnd);eq(missing,1,'đúng 1 chứng từ thiếu tỷ giá (khớp ghi chú R14)');
+  const d1=l.docs.find(d=>d.id==='d1'),r1=c.docRowOut_(d1,l,null,byDoc,null);eq([r1.bk.baseGrossMinor,r1.bk.baseOutMinor],[25300,15180],'d1: 1.000,00 USD → 25.300; còn 600,00 USD → 15.180 (tỷ giá 25,30)');
+});
 console.log('Tổng kiểm tra:',steps);
