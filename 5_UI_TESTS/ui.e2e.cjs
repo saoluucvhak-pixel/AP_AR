@@ -137,6 +137,7 @@ await suite('3. Liên kết cũ từ Tổng quan và bộ lọc đã lưu',async
   // lưu
   await pg.click('.sf-bar button:has-text("Lưu")');await pg.waitForTimeout(300);await pg.fill('.modal input','Thiếu hạn USD');await pg.click('.modal .primary');await pg.waitForTimeout(300);;
   await pg.click('[data-sf-reset]');await pg.waitForTimeout(500);eq(last(calls,'doc.list').payload.adv,undefined);
+  await pg.evaluate(()=>{SWR_={}});  // bộ lọc đã lưu trùng đúng điều kiện lần đầu: xóa đệm để kiểm tra yêu cầu gửi đi
   await pg.selectOption('[data-sf-saved]','Thiếu hạn USD');await pg.waitForTimeout(600);
   eq(last(calls,'doc.list').payload.adv.sel.aging,['MISSING_DUE']);
   // bộ lọc cũ có điều kiện không còn áp dụng -> báo lại
@@ -898,6 +899,33 @@ await suite('51. Chữ dự phòng: dù biến --font không dùng được, th�
   const fam=await pg.evaluate(()=>['body','input','button','th'].map(s=>{const e=document.querySelector(s);return e?getComputedStyle(e).fontFamily:'(không có '+s+')'}));
   fam.forEach((f,i)=>ok(/Be Vietnam Pro/.test(f)&&/sans-serif/.test(f),['body','input','button','th'][i]+': '+f));
   const sz=await pg.evaluate(()=>getComputedStyle(document.body).fontSize);eq(sz,'14px');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('52. Bộ nhớ đệm phía trình duyệt: quay lại màn danh sách hiện ngay không gọi lại máy chủ; bản cũ thì cập nhật ngầm và tự dựng lại khi dữ liệu khác; không dựng lại khi đang gõ; thao tác ghi xóa đệm',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});
+  const n=a=>calls.filter(c=>c.action===a).length,txt=()=>pg.locator('#main').innerText();
+  await go(pg,'#/docs/AR',900);const n1=n('doc.list');ok(n1>=1,'lần đầu gọi máy chủ');ok(/D2/.test(await txt()),'có chứng từ D2');
+  await go(pg,'#/orders',700);await go(pg,'#/docs/AR',150);eq(n('doc.list'),n1,'quay lại trong 3 giây: dùng đệm, không gọi lại');ok(/D2/.test(await txt()),'hiện ngay từ đệm');
+  const key=await pg.evaluate(()=>Object.keys(SWR_).filter(k=>/^doc\.list/.test(k))[0]);ok(key,'đệm có doc.list');
+  // bản đệm cũ (thiếu D2) và đã quá 3 giây → hiện bản cũ ngay, rồi cập nhật ngầm và dựng lại
+  await go(pg,'#/orders',500);
+  await pg.evaluate(k=>{const e=SWR_[k];e.data.items=e.data.items.filter(x=>x.docNo!=='D2');e.json=JSON.stringify(e.data);e.at-=10000},key);
+  await pg.evaluate(()=>{window.__apiRun=apiRun;apiRun=function(){const a=arguments,self=this;return new Promise(r=>setTimeout(r,500)).then(()=>window.__apiRun.apply(self,a))}});  // máy chủ trả chậm 0,5 giây
+  await pg.evaluate(()=>{location.hash='#/docs/AR'});await pg.waitForTimeout(150);const early=await txt();
+  await pg.waitForFunction(()=>/D2/.test(document.querySelector('#main').innerText),null,{timeout:5000});
+  ok(!/D2/.test(early)&&/D1|MULTI|NOC/.test(early),'hiện ngay bản đệm cũ (chưa có D2)');ok(n('doc.list')>n1,'đã cập nhật ngầm');ok(/D2/.test(await txt()),'tự dựng lại với dữ liệu mới');
+  await pg.evaluate(()=>{apiRun=window.__apiRun});
+  // đang gõ vào ô tìm kiếm: không dựng lại
+  await go(pg,'#/orders',500);await pg.evaluate(()=>{apiRun=function(){const a=arguments,self=this;return new Promise(r=>setTimeout(r,600)).then(()=>window.__apiRun.apply(self,a))}});await pg.evaluate(k=>{const e=SWR_[k];e.data.items=e.data.items.filter(x=>x.docNo!=='D2');e.json=JSON.stringify(e.data);e.at-=10000},key);
+  const before=n('doc.list');
+  await pg.evaluate(()=>{location.hash='#/docs/AR';return new Promise(r=>{const t=setInterval(()=>{const i=document.querySelector('#main input');if(i&&/D1|MULTI|NOC/.test(document.querySelector('#main').innerText)){i.focus();clearInterval(t);r(true)}},1)})});await pg.waitForTimeout(1500);
+  ok(n('doc.list')>before,'vẫn cập nhật đệm ngầm');ok(!/D2/.test(await txt()),'đang gõ: giữ nguyên màn, không dựng lại');
+  await pg.evaluate(()=>{apiRun=window.__apiRun});
+  // dựng lại bảng tổng hợp cũng xóa đệm
+  await go(pg,'#/docs/AR',700);ok(await pg.evaluate(()=>Object.keys(SWR_).length)>0,'đệm có dữ liệu');await pg.evaluate(()=>api('summary.refresh',{force:true}).catch(()=>0));eq(await pg.evaluate(()=>Object.keys(SWR_).length),0,'summary.refresh xóa đệm');
+  // thao tác ghi xóa sạch đệm
+  await pg.evaluate(()=>{document.activeElement&&document.activeElement.blur();invalidateReads_()});eq(await pg.evaluate(()=>Object.keys(SWR_).length),0,'ghi xong: đệm trống');
+  await go(pg,'#/orders',500);const n2=n('doc.list');await go(pg,'#/docs/AR',900);ok(n('doc.list')>n2,'sau khi xóa đệm phải đọc lại máy chủ');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
