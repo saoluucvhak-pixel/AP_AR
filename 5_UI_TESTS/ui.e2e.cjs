@@ -820,6 +820,28 @@ await suite('44. Máy chủ cũ chưa có order.options: lô đầu vẫn vào �
   await pg.evaluate(()=>{S.dirty=false;invalidateReads_()});const n=calls.length;await go(pg,'#/docs/AR',1500);const acts=calls.slice(n).map(c=>c.action);ok(acts.includes('order.options')&&acts.includes('order.list')&&acts.includes('doc.list'),'thử order.options rồi lùi về order.list: '+acts.join(','));
   ok(await pg.evaluate(()=>(S.orderOpts||[]).length>0),'ô lọc vẫn có danh sách đơn');await pg.close();
 });
+await suite('45. R36: Tổng quan có thẻ "Tổng công nợ quy đổi VND" (phải thu, phải trả, ròng) theo giá trị ghi sổ và diễn giải nguyên tệ; báo dòng thiếu tỷ giá',async()=>{
+  const w=build();w.T.DebtDoc.length=0;w.T.DebtLine.length=0;w.T.Payment.length=0;w.T.Allocation.length=0;
+  const dd=(id,dir,cur,amt,o)=>{w.T.DebtDoc.push(Object.assign(mkdoc(id,{},amt),{direction:dir,currency:cur},o||{}));w.T.DebtLine.push(mkline('l'+id,id,amt))};
+  dd('b1','AR','USD',100000,{fxRateE4:253000});dd('b2','AR','VND',5000000,{});dd('b3','AP','USD',50000,{fxRateE4:254000});dd('b4','AR','USD',30000,{docDate:'2026-10-02',postingDate:'2026-10-02'});
+  w.T.Payment.push({id:'pb1',payNo:'PT-9',direction:'IN',partnerId:'p1',currency:'USD',amountMinor:10000,effectiveDate:'2026-10-02',method:'BANK',cashAccountCode:'Q1',status:'POSTED',fxRateE4:253000,amountBaseMinor:2530,version:1});
+  const {pg,errs}=await newPage(browser,w);await go(pg,'#/dashboard',1500);
+  const card=pg.locator('[data-book-totals]');eq(await card.count(),1,'có thẻ tổng quy đổi');const tx=(await card.innerText()).replace(/\s+/g,' ');
+  ok(/Tổng công nợ quy đổi VND/.test(tx),tx);ok(/Phải thu \(đã trừ tiền thu chưa phân bổ\)/.test(tx)&&/Phải trả/.test(tx)&&/Công nợ ròng/.test(tx),'đủ ba chỉ tiêu: '+tx);
+  ok(/Phải thu \(đã trừ tiền thu chưa phân bổ\) 5\.022\.770 VND/.test(tx),'phải thu ròng = 25.300 + 5.000.000 − ứng trước 2.530 = 5.022.770: '+tx.slice(0,300));ok(/Còn nợ 5\.025\.300 · ứng trước 2\.530/.test(tx),'còn nợ và ứng trước');ok(/Phải trả \(đã trừ tiền chi chưa phân bổ\) 12\.700 VND/.test(tx),'phải trả 500,00 USD × 25,40 = 12.700');
+  ok(/USD/.test(tx)&&/→/.test(tx),'diễn giải nguyên tệ → quy đổi');ok(/1 dòng\/phiếu chưa có tỷ giá ghi nhận/.test(tx),'báo dòng thiếu tỷ giá');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('46. R36: Tổng hợp công nợ (Khách hàng/NCC) có công tắc hiển thị Quy đổi VND / Từng tiền tệ / từng tiền tệ; quy đổi mỗi ô một số',async()=>{
+  const w=build();w.T.DebtDoc.length=0;w.T.DebtLine.length=0;w.T.Payment.length=0;w.T.Allocation.length=0;
+  const dd=(id,cur,amt,o)=>{w.T.DebtDoc.push(Object.assign(mkdoc(id,{},amt),{currency:cur},o||{}));w.T.DebtLine.push(mkline('l'+id,id,amt))};dd('c1','USD',100000,{fxRateE4:253000});dd('c2','VND',5000000,{});
+  const {pg,errs}=await newPage(browser,w);await go(pg,'#/summary',1500);
+  const mode=()=>pg.locator('[data-cur-mode]').getAttribute('data-cur-mode'),row=()=>pg.locator('tbody tr',{hasText:'ABC'}).first().innerText().then(t=>t.replace(/\s+/g,' '));
+  eq(await mode(),'BASE','mặc định quy đổi VND khi có nhiều tiền tệ');let r=await row();ok(/5\.025\.300/.test(r)&&!/USD/.test(r.split('Phải thu')[0]||''),'một số quy đổi (5.025.300 = 5.000.000 + 1.000,00 USD × 25,30): '+r);
+  ok(await pg.locator('[data-book-total]').count()===1,'tổng quy đổi toàn đối tác');
+  await pg.locator('[data-cur-btn="ALL"]').click();eq(await mode(),'ALL');r=await row();ok(/USD/.test(r)&&/VND/.test(r),'từng tiền tệ xếp chồng: '+r);
+  await pg.locator('[data-cur-btn="USD"]').click();eq(await mode(),'USD');r=await row();ok(/USD/.test(r)&&!/5\.000\.000/.test(r),'chỉ USD: '+r);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

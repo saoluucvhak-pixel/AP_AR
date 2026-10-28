@@ -2642,7 +2642,7 @@ function dashboardSummaryLive_(user, req) {
         k[x.direction][x.purpose === 'ADVANCE' ? 'advance' : 'other'] += b.unalloc;
         k[x.direction].count++;
     });
-    var quality = dashboardQuality_(user, led, agg, p);
+    var quality = dashboardQuality_(user, led, agg, p), bookTotals = bookDebtTotals_(led, { partnerId: p.partnerId, group: p.group, currency: p.currency });
     var months = [], cur = monthOf_(ls), endM = monthOf_(asOf), guard = 0;
     while (cur <= endM && guard++ < 60) {
         months.push(cur);
@@ -2688,7 +2688,7 @@ function dashboardSummaryLive_(user, req) {
                 s.paid[j] -= x.amountMinor;
         }
     });
-    return { asOf: asOf, ledgerStartDate: ls, sections: sections, advances: adv, quality: quality, trend: trend, dataVersion: dataVersion_(), generatedAt: nowIso_(),
+    return { asOf: asOf, ledgerStartDate: ls, sections: sections, advances: adv, bookTotals: bookTotals, quality: quality, trend: trend, dataVersion: dataVersion_(), generatedAt: nowIso_(),
         limits: 'Số dư tính từ chứng từ và phân bổ đã ghi nhận; không suy ngược từ số đã thanh toán hiện tại.' };
 }
 function dashboardUninvoicedLive_(user, req) {
@@ -6319,6 +6319,68 @@ function fxBackfill_(user, req) {
     return { stamped: res.stamped, skippedClosed: res.skippedClosed, candidates: docs.length, lookups: lookups, remaining: Object.keys(unresolved).length, message: Object.keys(unresolved).length ? 'Còn ' + Object.keys(unresolved).length + ' ngày chưa có tỷ giá (Google không trả hoặc quá giới hạn lượt): nhập tay hoặc chạy lại.' : '' };
 }
 
+function bookCtx_() { return { rates: repoValid_('FxRate'), cm: currencyMap_(), dr: {} }; }
+function bookDocRate_(bc, d) {
+    var v = bc.dr[d.id];
+    if (v === undefined)
+        v = bc.dr[d.id] = d.fxRateE4 > 0 ? d.fxRateE4 : ((fxFind_(d.currency, d.docDate, bc.rates) || {}).rateE4 || 0);
+    return v;
+}
+function bookOfLine_(bc, d, minor) {
+    if (d.currency === BASE_CUR_)
+        return minor;
+    var e4 = bookDocRate_(bc, d);
+    return e4 > 0 ? fxToBase_(minor, (bc.cm[d.currency] || { decimals: 0 }).decimals, e4) : null;
+}
+function bookOfAdv_(bc, x, unalloc) {
+    if (x.currency === BASE_CUR_)
+        return unalloc;
+    if (x.amountBaseMinor > 0 && x.amountMinor > 0)
+        return Number((BigInt(x.amountBaseMinor) * BigInt(unalloc) * BigInt(2) + BigInt(x.amountMinor)) / (BigInt(x.amountMinor) * BigInt(2)));
+    var e4 = x.fxRateE4 > 0 ? x.fxRateE4 : ((fxFind_(x.currency, x.effectiveDate, bc.rates) || {}).rateE4 || 0);
+    return e4 > 0 ? fxToBase_(unalloc, (bc.cm[x.currency] || { decimals: 0 }).decimals, e4) : null;
+}
+
+function bookDebtTotals_(led, filter) {
+    filter = filter || {};
+    var bc = bookCtx_(), res = { currency: BASE_CUR_, AR: { out: 0, credit: 0, adv: 0, net: 0, byCur: {} }, AP: { out: 0, credit: 0, adv: 0, net: 0, byCur: {} }, net: 0, missing: 0 };
+    function cell(dir, cur) { return res[dir].byCur[cur] = res[dir].byCur[cur] || { out: 0, outB: 0, adv: 0, advB: 0 }; }
+    led.lines.forEach(function (l) {
+        var b = led.bal.byLine[l.id], d = led.docById[l.docId];
+        if (!b || !d || b.out === 0 || (filter.partnerId && d.partnerId !== filter.partnerId) || (filter.group && d.businessGroupCode !== filter.group) || (filter.currency && d.currency !== filter.currency))
+            return;
+        var v = bookOfLine_(bc, d, b.out);
+        if (v === null) {
+            res.missing++;
+            return;
+        }
+        if (b.out > 0) {
+            var c = cell(d.direction, d.currency);
+            c.out += b.out;
+            c.outB += v;
+            res[d.direction].out += v;
+        }
+        else
+            res[d.direction].credit += -v;
+    });
+    led.payments.forEach(function (x) {
+        var b = led.payBal[x.id];
+        if (!b || b.unalloc <= 0 || x.status !== 'POSTED' || (filter.partnerId && x.partnerId !== filter.partnerId) || (filter.currency && x.currency !== filter.currency))
+            return;
+        var v = bookOfAdv_(bc, x, b.unalloc), dir = x.direction === 'IN' ? 'AR' : 'AP';
+        if (v === null) {
+            res.missing++;
+            return;
+        }
+        var c = cell(dir, x.currency);
+        c.adv += b.unalloc;
+        c.advB += v;
+        res[dir].adv += v;
+    });
+    ['AR', 'AP'].forEach(function (dir) { res[dir].net = res[dir].out - res[dir].adv; });
+    res.net = res.AR.net - res.AP.net;
+    return res;
+}
 function fxRevalLines_(user, asOf, filter) {
     filter = filter || {};
     var led = loadLedger_(user, asOf), rates = repoValid_('FxRate'), agg = {}, miss = 0, noRate = {};
@@ -8366,7 +8428,7 @@ function rep01_(user, code, params) {
         col_('gross', 'Tổng phải thu/trả', 'money'), col_('settled', 'Đã thu/đã trả', 'money'), col_('out', 'Còn công nợ', 'money'), col_('note', 'Ghi chú')]);
     var groupsName = {};
     catalogList_('BUSINESS_GROUP', true).forEach(function (c) { groupsName[c.code] = c.name || c.code; });
-    var agg = {}, tot = {};
+    var agg = {}, tot = {}, aggB = {}, totB = { AR: { g: 0, s: 0, o: 0 }, AP: { g: 0, s: 0, o: 0 } }, bc = bookCtx_(), hasForeign = false, missB = 0;
     led.lines.forEach(function (l) {
         var b = led.bal.byLine[l.id];
         if (!b)
@@ -8374,6 +8436,21 @@ function rep01_(user, code, params) {
         var d = led.docById[l.docId];
         if (params.group && d.businessGroupCode !== params.group)
             return;
+
+        if (d.currency !== BASE_CUR_)
+            hasForeign = true;
+        var gB = bookOfLine_(bc, d, b.gross + b.adjust), oB = bookOfLine_(bc, d, b.out);
+        if (gB === null || oB === null)
+            missB++;
+        else {
+            var kb = d.direction + '|' + d.businessGroupCode, ab = aggB[kb] = aggB[kb] || { g: 0, s: 0, o: 0 };
+            ab.g += gB;
+            ab.s += gB - oB;
+            ab.o += oB;
+            totB[d.direction].g += gB;
+            totB[d.direction].s += gB - oB;
+            totB[d.direction].o += oB;
+        }
         var k = [d.direction, d.businessGroupCode, d.currency].join('|'), a = agg[k] = agg[k] || { g: 0, s: 0, o: 0, partners: {} };
         a.g += b.gross + b.adjust;
         a.s += b.alloc;
@@ -8396,6 +8473,31 @@ function rep01_(user, code, params) {
             addRow_(rep, 'total', { label: dir === 'AR' ? 'TỔNG PHẢI THU' : 'TỔNG PHẢI TRẢ', currency: cur, gross: t.g, settled: t.s, out: t.o }, cur);
         });
     });
+    if (hasForeign) {
+
+        addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
+        Object.keys(aggB).sort().forEach(function (k) {
+            var x = k.split('|'), a = aggB[k];
+            addRow_(rep, 'data', { stt: ++n, label: (x[0] === 'AR' ? 'Phải thu – ' : 'Phải trả – ') + (groupsName[x[1]] || x[1]), currency: BASE_CUR_, gross: a.g, settled: a.s, out: a.o }, BASE_CUR_);
+        });
+        var advB = { AR: 0, AP: 0 };
+        led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc > 0 && x.status === 'POSTED') {
+            var v = bookOfAdv_(bc, x, b.unalloc);
+            if (v === null)
+                missB++;
+            else
+                advB[x.direction === 'IN' ? 'AR' : 'AP'] += v;
+        } });
+        ['AR', 'AP'].forEach(function (dir) {
+            addRow_(rep, 'total', { label: dir === 'AR' ? 'TỔNG PHẢI THU QUY ĐỔI VND' : 'TỔNG PHẢI TRẢ QUY ĐỔI VND', currency: BASE_CUR_, gross: totB[dir].g, settled: totB[dir].s, out: totB[dir].o }, BASE_CUR_);
+            if (advB[dir])
+                addRow_(rep, 'data', { label: dir === 'AR' ? 'Tiền thu chưa phân bổ (ứng trước) quy đổi VND' : 'Tiền chi chưa phân bổ (trả trước) quy đổi VND', currency: BASE_CUR_, settled: advB[dir], out: -advB[dir] }, BASE_CUR_);
+        });
+        addRow_(rep, 'total', { label: 'CÔNG NỢ RÒNG QUY ĐỔI VND (phải thu − phải trả, sau khi trừ ứng trước)', currency: BASE_CUR_, out: (totB.AR.o - advB.AR) - (totB.AP.o - advB.AP) }, BASE_CUR_);
+        if (missB)
+            rep.notes.push(missB + ' dòng/phiếu chưa có tỷ giá ghi nhận (chứng từ hoặc bảng Tỷ giá) nên chưa được quy đổi VND; số nguyên tệ ở các phần trên vẫn đủ.');
+        rep.notes.push('Phần "Quy đổi VND" là giá trị ghi sổ theo tỷ giá đã lưu lúc ghi nhận (không đánh giá lại theo tỷ giá ngày chốt – xem R14).');
+    }
     if (!rep.rows.length)
         rep.notes.push('Chưa có dữ liệu công nợ đã ghi nhận trong phạm vi quyền.');
     var pend = {};
@@ -8411,7 +8513,7 @@ function rep01_(user, code, params) {
         adv[k] = (adv[k] || 0) + b.unalloc;
     } });
     Object.keys(adv).forEach(function (k) { var a = k.split(':'); rep.notes.push((a[0] === 'IN' ? 'Tiền nhận chưa phân bổ/ứng trước: ' : 'Tiền trả chưa phân bổ/trả trước: ') + fmtMoney_(adv[k], a[1]) + ' ' + a[1]); });
-    rep.notes.push('Các đồng tiền được theo dõi riêng, không cộng chéo. Số dư tính tại ngày chốt ' + params.asOf + '.');
+    rep.notes.push('Các phần theo từng tiền tệ được theo dõi riêng, không cộng chéo; số quy đổi VND chỉ nằm ở phần "Quy đổi VND" riêng (nếu có). Số dư tính tại ngày chốt ' + params.asOf + '.');
     rep.signatures = true;
     return rep;
 }
@@ -8436,7 +8538,7 @@ function rep02_(user, code, params) {
         return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
-    var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT';
+    var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT', bc = bookCtx_(), baseBy = {}, hasForeign = false, missB = 0;
 
     led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
         advBy[x.partnerId + '|' + x.currency] = (advBy[x.partnerId + '|' + x.currency] || 0) + b.unalloc; });
@@ -8460,6 +8562,18 @@ function rep02_(user, code, params) {
         var b = led.bal.byDoc[d.id], hs = serviceCodesOfDoc_(lineByDoc[d.id] || []).join(', '), first = (lineByDoc[d.id] || []).slice().sort(function (x, y) { return x.lineNo - y.lineNo; })[0];
         addRow_(rep, 'data', { stt: ++n, docNo: d.docNo, docDate: d.docDate, invoiceNo: d.invoiceNo, svc: hs, desc: first ? first.description : '', gross: b.gross + b.adjust, settled: b.alloc, out: b.out, dueDate: d.dueDate || '—',
             status: PAY_STATUS_VN_[b.status] || '', note: d.statusNote }, d.currency);
+
+        if (d.currency !== BASE_CUR_)
+            hasForeign = true;
+        var gB = bookOfLine_(bc, d, b.gross + b.adjust), oB = bookOfLine_(bc, d, b.out);
+        if (gB === null || oB === null)
+            missB++;
+        else {
+            var pbk = baseBy[d.partnerId] = baseBy[d.partnerId] || { name: partnerName_(led.pm, d.partnerId), g: 0, s: 0, o: 0 };
+            pbk.g += gB;
+            pbk.s += gB - oB;
+            pbk.o += oB;
+        }
         sub.g += b.gross + b.adjust;
         sub.s += b.alloc;
         sub.o += b.out;
@@ -8476,6 +8590,35 @@ function rep02_(user, code, params) {
             addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
         }
     });
+    if (hasForeign) {
+
+        addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
+        var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {};
+        led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
+            var v = bookOfAdv_(bc, x, pb2.unalloc);
+            if (v === null)
+                missB++;
+            else {
+                advPart[x.partnerId] = (advPart[x.partnerId] || 0) + v;
+                advTot += v;
+            }
+        } });
+        Object.keys(baseBy).sort(function (a, c) { return cmpStr_(baseBy[a].name, baseBy[c].name); }).forEach(function (k) {
+            var o = baseBy[k];
+            addRow_(rep, 'data', { stt: ++n, desc: o.name, currency: BASE_CUR_, gross: o.g, settled: o.s, out: o.o }, BASE_CUR_);
+            tb.g += o.g;
+            tb.s += o.s;
+            tb.o += o.o;
+        });
+        addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND', currency: BASE_CUR_, gross: tb.g, settled: tb.s, out: tb.o }, BASE_CUR_);
+        if (advTot) {
+            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước) – quy đổi VND' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước) – quy đổi VND', currency: BASE_CUR_, settled: advTot, out: -advTot }, BASE_CUR_);
+            addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: BASE_CUR_, gross: tb.g, settled: tb.s + advTot, out: tb.o - advTot }, BASE_CUR_);
+        }
+        if (missB)
+            rep.notes.push(missB + ' chứng từ/phiếu chưa có tỷ giá ghi nhận nên chưa được quy đổi VND (số nguyên tệ vẫn đủ).');
+        rep.notes.push('Phần "Quy đổi VND" là giá trị ghi sổ theo tỷ giá đã lưu lúc ghi nhận, gộp mọi tiền tệ của từng đối tác (không đánh giá lại theo tỷ giá ngày chốt – xem R14).');
+    }
     if (!docs.length)
         rep.notes.push('Không có chứng từ phù hợp bộ lọc.');
     rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện thành dòng riêng ở cuối mỗi đối tác; dòng "gồm ứng trước" là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
@@ -8672,7 +8815,7 @@ function rep06_(user, code, params) {
 function rep07_(user, code, params) {
     var led = loadLedger_(user, params.asOf), rep = newReport_(code, params, [col_('partner', 'Đối tác'), col_('currency', 'Tiền tệ', 'text', 'center')]
         .concat(AGING_BUCKETS.map(function (b) { return col_(b, AGING_LABELS[b], 'money'); })).concat([col_('total', 'Tổng còn nợ', 'money')]));
-    var credit = {};
+    var credit = {}, bc = bookCtx_(), baseBy = { AR: {}, AP: {} }, hasForeign = false, missB = 0;
     ['AR', 'AP'].forEach(function (dir) {
         var by = {}, any = false;
         led.lines.forEach(function (l) {
@@ -8693,6 +8836,17 @@ function rep07_(user, code, params) {
             o[bk] = (o[bk] || 0) + b.out;
             o.total += b.out;
             any = true;
+
+            if (d.currency !== BASE_CUR_)
+                hasForeign = true;
+            var vb = bookOfLine_(bc, d, b.out);
+            if (vb === null)
+                missB++;
+            else {
+                var ob = baseBy[dir][d.partnerId] = baseBy[dir][d.partnerId] || { total: 0 };
+                ob[bk] = (ob[bk] || 0) + vb;
+                ob.total += vb;
+            }
         });
         if (!any)
             return;
@@ -8706,6 +8860,28 @@ function rep07_(user, code, params) {
         });
         Object.keys(tot).sort().forEach(function (c) { var cells = { partner: 'TỔNG ' + (dir === 'AR' ? 'PHẢI THU' : 'PHẢI TRẢ'), currency: c, total: tot[c].total }; AGING_BUCKETS.forEach(function (b) { cells[b] = tot[c][b] || 0; }); addRow_(rep, 'total', cells, c); });
     });
+    if (hasForeign) {
+        addRow_(rep, 'group', { partner: 'QUY ĐỔI ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
+        ['AR', 'AP'].forEach(function (dir) {
+            var ks = Object.keys(baseBy[dir]);
+            if (!ks.length)
+                return;
+            addRow_(rep, 'group', { partner: (dir === 'AR' ? 'PHẢI THU' : 'PHẢI TRẢ') + ' – quy đổi ' + BASE_CUR_ }, BASE_CUR_);
+            var tt = { total: 0 };
+            ks.sort(function (a, c) { return cmpStr_(partnerName_(led.pm, a), partnerName_(led.pm, c)); }).forEach(function (k) {
+                var o = baseBy[dir][k], cells = { partner: partnerName_(led.pm, k), currency: BASE_CUR_, total: o.total };
+                AGING_BUCKETS.forEach(function (b) { cells[b] = o[b] || 0; tt[b] = (tt[b] || 0) + (o[b] || 0); });
+                tt.total += o.total;
+                addRow_(rep, 'data', cells, BASE_CUR_);
+            });
+            var tc = { partner: 'TỔNG ' + (dir === 'AR' ? 'PHẢI THU' : 'PHẢI TRẢ') + ' QUY ĐỔI ' + BASE_CUR_, currency: BASE_CUR_, total: tt.total };
+            AGING_BUCKETS.forEach(function (b) { tc[b] = tt[b] || 0; });
+            addRow_(rep, 'total', tc, BASE_CUR_);
+        });
+        if (missB)
+            rep.notes.push(missB + ' dòng chưa có tỷ giá ghi nhận nên chưa được quy đổi VND (số nguyên tệ ở các phần trên vẫn đủ).');
+        rep.notes.push('Phần "Quy đổi VND" là giá trị ghi sổ theo tỷ giá đã lưu lúc ghi nhận, gộp mọi tiền tệ của từng đối tác theo cùng nhóm tuổi nợ (không đánh giá lại theo tỷ giá ngày chốt – xem R14).');
+    }
     if (!rep.rows.length)
         rep.notes.push('Không có khoản còn nợ tại ngày chốt.');
     var adv = {};
@@ -9505,31 +9681,49 @@ var RM_CHUNK_ = 40000, RM_MAX_PARTS_ = 60;
 var RM_MODELS_ = { PARTNERS: 1, ORDERS: 1, COSTS: 1, WORKBENCH: 1, DASHBOARD: 1, UNINVOICED: 1 };
 function rmMaxAgeMin_() { var v = Number(cfgGet_('summary.maxAgeMin', '15')); return isFinite(v) && v > 0 ? v : 15; }
 function rmPartners_(asOf) {
-    var led = loadLedger_(RM_USER_, asOf), agg = {};
+    var led = loadLedger_(RM_USER_, asOf), agg = {}, bc = bookCtx_();
     led.lines.forEach(function (l) {
         var b = led.bal.byLine[l.id];
         if (!b)
             return;
         var d = led.docById[l.docId], k = [d.direction, d.partnerId, d.businessGroupCode || '', d.currency].join('|');
-        var o = agg[k] = agg[k] || { dir: d.direction, p: d.partnerId, g: d.businessGroupCode || '', c: d.currency, out: 0, credit: 0, overdue: 0, due7: 0, missing: 0, maxDays: 0, docs: {}, oldest: '' };
+
+        var o = agg[k] = agg[k] || { dir: d.direction, p: d.partnerId, g: d.businessGroupCode || '', c: d.currency, out: 0, credit: 0, overdue: 0, due7: 0, missing: 0, maxDays: 0, docs: {}, oldest: '', outB: 0, creditB: 0, overdueB: 0, due7B: 0, missingB: 0, baseMiss: 0 };
+        var vb = b.out === 0 ? 0 : bookOfLine_(bc, d, b.out);
         if (b.out < 0) {
             o.credit += -b.out;
+            if (vb === null)
+                o.baseMiss++;
+            else
+                o.creditB += -vb;
             return;
         }
         if (b.out === 0)
             return;
         o.out += b.out;
         o.docs[d.id] = 1;
-        if (!d.dueDate)
+        if (vb === null)
+            o.baseMiss++;
+        else
+            o.outB += vb;
+        if (!d.dueDate) {
             o.missing += b.out;
+            if (vb !== null)
+                o.missingB += vb;
+        }
         else {
             var days = daysBetween_(d.dueDate, asOf);
             if (days > 0) {
                 o.overdue += b.out;
+                if (vb !== null)
+                    o.overdueB += vb;
                 o.maxDays = Math.max(o.maxDays, days);
             }
-            else if (days >= -7)
+            else if (days >= -7) {
                 o.due7 += b.out;
+                if (vb !== null)
+                    o.due7B += vb;
+            }
         }
         var dd = docEffDate_(d);
         if (!o.oldest || dd < o.oldest)
@@ -9538,8 +9732,10 @@ function rmPartners_(asOf) {
     var rows = Object.keys(agg).sort().map(function (k) { var o = agg[k]; o.docs = Object.keys(o.docs).length; return o; });
     led.payments.forEach(function (x) {
         var b = led.payBal[x.id];
-        if (b && b.unalloc > 0 && x.status === 'POSTED')
-            rows.push({ adv: 1, dir: x.direction === 'IN' ? 'AR' : 'AP', p: x.partnerId, g: '', c: x.currency, amt: b.unalloc });
+        if (b && b.unalloc > 0 && x.status === 'POSTED') {
+            var av = bookOfAdv_(bc, x, b.unalloc);
+            rows.push({ adv: 1, dir: x.direction === 'IN' ? 'AR' : 'AP', p: x.partnerId, g: '', c: x.currency, amt: b.unalloc, amtB: av === null ? 0 : av, baseMiss: av === null ? 1 : 0 });
+        }
     });
     return rows;
 }
@@ -10018,16 +10214,28 @@ function summaryReconcile_(user, req) {
 function rmMeta_(r) { return { source: r.source, builtAt: r.builtAt, asOf: r.asOf, dataVersion: r.dataVersion, currentDataVersion: dataVersion_(), behind: Math.max(0, dataVersion_() - r.dataVersion), maxAgeMin: rmMaxAgeMin_(), setId: r.builtAt, status: r.status || { failures: 0, lastError: '', lastOkAt: '' } }; }
 function summaryPartners_(user, req) {
     requirePerm_(user, 'read');
-    var r = rmServe_('PARTNERS', !!(req.payload && req.payload.live)), pm = partnerMap_(), by = {};
+    var r = rmServe_('PARTNERS', !!(req.payload && req.payload.live)), pm = partnerMap_(), by = {}, bookReady = true;
     r.value.forEach(function (x) {
         var p = pm[x.p];
         if (!inScope_(user, p, x.g))
             return;
-        var o = by[x.p] = by[x.p] || { partnerId: x.p, name: partnerName_(pm, x.p), isCustomer: p ? p.isCustomer : 0, isSupplier: p ? p.isSupplier : 0, AR: {}, AP: {}, adv: { AR: {}, AP: {} } };
+        var o = by[x.p] = by[x.p] || { partnerId: x.p, name: partnerName_(pm, x.p), isCustomer: p ? p.isCustomer : 0, isSupplier: p ? p.isSupplier : 0, AR: {}, AP: {}, adv: { AR: {}, AP: {} }, base: { AR: { out: 0, overdue: 0, due7: 0, missing: 0, adv: 0, net: 0, miss: 0 }, AP: { out: 0, overdue: 0, due7: 0, missing: 0, adv: 0, net: 0, miss: 0 } } };
         if (x.adv) {
             o.adv[x.dir][x.c] = (o.adv[x.dir][x.c] || 0) + x.amt;
+            if (x.amtB === undefined)
+                bookReady = false;
+            o.base[x.dir].adv += x.amtB || 0;
+            o.base[x.dir].miss += x.baseMiss || 0;
             return;
         }
+        if (x.outB === undefined)
+            bookReady = false;
+        var bs = o.base[x.dir];
+        bs.out += x.outB || 0;
+        bs.overdue += x.overdueB || 0;
+        bs.due7 += x.due7B || 0;
+        bs.missing += x.missingB || 0;
+        bs.miss += x.baseMiss || 0;
         var c = o[x.dir][x.c] = o[x.dir][x.c] || { out: 0, credit: 0, overdue: 0, due7: 0, missing: 0, maxDays: 0, docs: 0, oldest: '' };
         c.out += x.out;
         c.credit += x.credit;
@@ -10045,7 +10253,11 @@ function summaryPartners_(user, req) {
     items.forEach(function (o) { o.net = { AR: {}, AP: {} }; ['AR', 'AP'].forEach(function (dir) { var cs = {}; Object.keys(o[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(o.adv[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(cs).forEach(function (c) { var n = (o[dir][c] ? o[dir][c].out : 0) - (o.adv[dir][c] || 0); if (n)
         o.net[dir][c] = n; }); }); });
     items.forEach(function (o) { ['AR', 'AP'].forEach(function (dir) { Object.keys(o[dir]).forEach(function (c) { var t = totals[dir][c] = totals[dir][c] || { out: 0, overdue: 0, due7: 0, missing: 0 }, x = o[dir][c]; t.out += x.out; t.overdue += x.overdue; t.due7 += x.due7; t.missing += x.missing; }); }); });
-    return { meta: rmMeta_(r), items: items, totals: totals };
+
+    var book = { AR: { out: 0, overdue: 0, due7: 0, missing: 0, adv: 0, net: 0, miss: 0 }, AP: { out: 0, overdue: 0, due7: 0, missing: 0, adv: 0, net: 0, miss: 0 }, net: 0 };
+    items.forEach(function (o) { ['AR', 'AP'].forEach(function (dir) { var b = o.base[dir]; b.net = b.out - b.adv; Object.keys(b).forEach(function (k) { book[dir][k] += b[k]; }); }); });
+    book.net = book.AR.net - book.AP.net;
+    return { meta: rmMeta_(r), items: items, totals: totals, book: book, bookReady: bookReady };
 }
 function summaryOrders_(user, req) {
     requirePerm_(user, 'read');
