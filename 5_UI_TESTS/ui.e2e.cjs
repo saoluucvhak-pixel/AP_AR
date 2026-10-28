@@ -892,6 +892,13 @@ await suite('50. Chứng từ ngoại tệ hiện thành tiền quy đổi VND: 
   await pg.locator('[data-path=fxRate]').fill('25,3');await pg.waitForTimeout(300);tx=await pg.locator('[data-form-book]').innerText();ok(/Quy đổi VND \(tạm tính\)/.test(tx)&&/25,3/.test(tx),'có tỷ giá: '+tx);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('51. Chữ dự phòng: dù biến --font không dùng được, thân trang, ô nhập, nút và bảng vẫn là chữ không chân (không rơi về Times)',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/docs/AR',900);
+  await pg.evaluate(()=>{document.documentElement.style.setProperty('--font','initial')});await pg.waitForTimeout(200);
+  const fam=await pg.evaluate(()=>['body','input','button','th'].map(s=>{const e=document.querySelector(s);return e?getComputedStyle(e).fontFamily:'(không có '+s+')'}));
+  fam.forEach((f,i)=>ok(/Be Vietnam Pro/.test(f)&&/sans-serif/.test(f),['body','input','button','th'][i]+': '+f));
+  const sz=await pg.evaluate(()=>getComputedStyle(document.body).fontSize);eq(sz,'14px');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;
