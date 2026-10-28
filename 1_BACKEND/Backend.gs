@@ -3053,11 +3053,11 @@ function docGet_(user, req) {
     var pm = partnerMap_();
     assertVisible_(user, pm[d.partnerId], d.businessGroupCode, '', 'Không tìm thấy chứng từ.');
     var asOf = req.payload.asOf || todayVn_();
-    var led = loadLedger_(user, asOf), shr = byId_(repoValid_('ShipmentRef')), accMapD = byId_(repoValid_('Accrual')), ordMapD = {};
+    var led = loadLedger_(user, asOf), shr = byId_(repoValid_('ShipmentRef')), accMapD = byId_(repoSliceValid_('Accrual', ['id', 'orderId'])), ordMapD = {};
     repoValid_('Order').forEach(function (o) { if (orderInScope_(user, o, pm))
         ordMapD[o.id] = o; });
     var lines = repoValid_('DebtLine').filter(function (l) { return l.docId === d.id; }).sort(function (a, b) { return a.lineNo - b.lineNo; });
-    var payments = byId_(repoValid_('Payment'));
+    var payments = byId_(repoSliceValid_('Payment', ['id', 'payNo']));
     var allocs = repoValid_('Allocation').filter(function (a) { return a.docId === d.id; }).map(function (a) {
         var pay = payments[a.paymentId];
         return { id: a.id, paymentId: a.paymentId, payNo: pay ? pay.payNo : '', amountMinor: a.amountMinor, effectiveDate: a.effectiveDate, debtLineId: a.debtLineId, reversesAllocId: a.reversesAllocId, fxDiffBaseMinor: a.fxDiffBaseMinor || 0 };
