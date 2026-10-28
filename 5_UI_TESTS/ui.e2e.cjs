@@ -857,6 +857,19 @@ await suite('47. Bản in giống màn hình: chỉ in bản báo cáo (ẩn ô 
   ok(/Đợt: A \(USD\)/.test(txt),'nhãn nhóm đặt ở cột không phải cột đầu vẫn hiện: '+txt.slice(0,200));
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('48. R02/R03 có ô "Đơn hàng cụ thể" và "Tìm theo số đơn / PO"; chọn đơn thì gửi orderId, tiêu đề ghi đơn; tiêu đề báo cáo luôn chữ tối (đọc được trên giao diện tối)',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/reports',900);
+  for(const code of ['R03','R02']){
+    await pg.evaluate(c=>{const s=document.querySelector('select');s.value=c;s.dispatchEvent(new Event('change'))},code);await pg.waitForTimeout(600);
+    const fld=t=>pg.locator('.field',{hasText:t}).first();
+    eq(await fld('Đơn hàng cụ thể').locator('select').count(),1,code+': có ô chọn đơn');eq(await fld('Tìm theo số đơn / PO').locator('input').count(),1,code+': có ô tìm đơn/PO');
+    const val=await pg.evaluate(()=>{const s=[...document.querySelectorAll('.field')].find(f=>/Đơn hàng cụ thể/.test(f.textContent)).querySelector('select');return s.options.length>1?s.options[1].value:''});ok(val,'có đơn để chọn');
+    await fld('Đơn hàng cụ thể').locator('select').selectOption(val);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);
+    eq(last(calls,'report.run').payload.params.orderId,val,code+': gửi orderId');ok(/Đơn hàng:/.test(await pg.locator('.report').innerText()),code+': tiêu đề ghi đơn đang lọc');
+  }
+  const col=await pg.evaluate(()=>getComputedStyle(document.querySelector('.report h2')).color);ok(/rgb\(17, 17, 17\)/.test(col),'tiêu đề chữ tối: '+col);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

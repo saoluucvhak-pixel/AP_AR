@@ -8525,13 +8525,31 @@ function rep02_(user, code, params) {
     var rep = newReport_(code, params, [col_('stt', 'STT', 'int', 'center'), col_('docNo', 'Số CT'), col_('docDate', 'Ngày CT', 'date'), col_('invoiceNo', 'Số HĐ'), col_('svc', 'Mã dịch vụ'),
         col_('desc', 'Nội dung'), col_('gross', dir === 'AR' ? 'Phải thu' : 'Phải trả', 'money'), col_('settled', dir === 'AR' ? 'Đã thu' : 'Đã trả', 'money'), col_('out', dir === 'AR' ? 'Còn phải thu' : 'Còn phải trả', 'money'),
         col_('dueDate', 'Đến hạn', 'date'), col_('status', 'Tình trạng (tính)'), col_('note', 'Ghi chú (người nhập)')]);
+
+    var qOrd = normText_(params.q || ''), ordFilter = !!(params.orderId || qOrd), ox = null, octx = null;
+    if (ordFilter) {
+        octx = orderLinkCtx_(user);
+        ox = docOrderIndex_(user, led.lines, octx);
+    }
+    function orderMatch(d) {
+        var e = ox[d.id];
+        if (!e)
+            return false;
+        if (params.orderId)
+            return e.orders.some(function (o) { return o.id === params.orderId; });
+        return e.orders.some(function (o) { return normText_(o.orderNo + ' ' + o.poNo).indexOf(qOrd) >= 0; }) || e.poRefs.some(function (r) { return normText_(r).indexOf(qOrd) >= 0; });
+    }
     var docs = led.docs.filter(function (d) {
-        return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
+        return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!ordFilter || orderMatch(d)) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
+    if (ordFilter) {
+        var fo2 = params.orderId ? octx.orders[params.orderId] : null;
+        rep.meta.order = params.orderId ? (fo2 && orderInScope_(user, fo2, octx.pm) ? fo2.orderNo + (fo2.poNo ? ' · PO ' + fo2.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
+    }
     var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT', bc = bookCtx_(), baseBy = {}, hasForeign = false, missB = 0;
 
-    led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
+    if (!ordFilter) led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
         advBy[x.partnerId + '|' + x.currency] = (advBy[x.partnerId + '|' + x.currency] || 0) + b.unalloc; });
     function flush() { if (sub) {
         addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name, currency: sub.cur, gross: sub.g, settled: sub.s, out: sub.o }, sub.cur);
@@ -8583,7 +8601,7 @@ function rep02_(user, code, params) {
 
         addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
         var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {}, nb = 0;
-        led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
+        if (!ordFilter) led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
             var v = bookOfAdv_(bc, x, pb2.unalloc);
             if (v === null)
                 missB++;
