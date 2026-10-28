@@ -52,7 +52,7 @@ var TABLES_ = {
 };
 var NOSYS_ = { SysTx: 1, AuditLog: 1 };
 // Cột bổ sung SAU cột hệ thống (để không làm lệch dữ liệu cũ); ensureSchema() tự thêm tiêu đề còn thiếu.
-var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s', 'unitPrice:n'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s', 'unitPrice:n'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i', 'allocPlanJson:s'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
+var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s', 'unitPrice:n'], FxRate: ['buyE4:i', 'sellE4:i'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s', 'unitPrice:n'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i', 'allocPlanJson:s'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
 var ID_PREFIX_ = { Partner: 'par', ServiceFile: 'sf', ShipmentRef: 'shr', DebtDoc: 'doc', DebtLine: 'dln', Payment: 'pay', Allocation: 'alc',
     OpeningBalance: 'opb', AppUser: 'usr', Catalog: 'cat', ImportBatch: 'bat', ImportRow: 'imr', BackupCatalog: 'bkp',
     ReportSnapshot: 'rpt', ReadModel: 'rdm', Order: 'odr', Accrual: 'acr', AccrualSplit: 'acs', Followup: 'flu', FxRate: 'fxr', FxEntry: 'fxe', PassLink: 'pls', CashTransfer: 'cxf', CashExchange: 'cex', BankRecon: 'brc', CashCount: 'ckk', SysTx: 'tx', AuditLog: 'aud' };
@@ -6038,6 +6038,20 @@ function fxNearest_(cur, date, rows) {
     });
     return best;
 }
+// Tỷ giá theo chiều: BUY (ngân hàng mua — dùng đánh giá lại phải thu, quỹ ngoại tệ) / SELL (ngân hàng bán — dùng đánh giá lại phải trả). Chưa nhập mua/bán thì dùng tỷ giá chung (basis MID).
+function fxSide_(row, side) {
+    var v = side === 'BUY' ? row.buyE4 : side === 'SELL' ? row.sellE4 : 0;
+    return v > 0 ? { e4: v, basis: side } : { e4: row.rateE4, basis: 'MID' };
+}
+function fxClosing_(cur, date, rows, side) {
+    var n = fxNearest_(cur, date, rows);
+    if (!n)
+        return null;
+    var sd = fxSide_(n, side);
+    return { e4: sd.e4, basis: sd.basis, rateDate: n.rateDate };
+}
+// Ngoại tệ đã có ít nhất một dòng tỷ giá mua/bán (đang dùng tính năng): thiếu mua/bán ở ngày chốt thì mới cảnh báo.
+function fxUsesSides_(cur, rows) { return (rows || []).some(function (r) { return r.currency === cur && (r.buyE4 > 0 || r.sellE4 > 0); }); }
 // Chọn dòng Google Finance gần nhất không sau ngày yêu cầu từ bảng giá trị [[ngày, giá đóng cửa], ...]; hàm thuần để kiểm thử.
 function fxPickGoogle_(values, date) {
     var best = null;
@@ -6120,7 +6134,7 @@ function fxList_(user, req) {
     var p = req.payload || {}, rows = repoValid_('FxRate').filter(function (r) { return (!p.currency || r.currency === p.currency) && (!p.from || r.rateDate >= p.from) && (!p.to || r.rateDate <= p.to); });
     rows.sort(function (a, b) { return a.rateDate < b.rateDate ? 1 : a.rateDate > b.rateDate ? -1 : (a.source < b.source ? -1 : 1); });
     var total = rows.length, size = Math.min(Math.max(Number(p.pageSize) || 100, 1), 500), page = Math.max(Number(p.page) || 1, 1);
-    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
+    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, buy: r.buyE4 > 0 ? fxText_(r.buyE4) : '', sell: r.sellE4 > 0 ? fxText_(r.sellE4) : '', source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
 }
 function fxSave_(user, req) {
     requirePerm_(user, 'fx.write');
@@ -6129,18 +6143,24 @@ function fxSave_(user, req) {
         errs.push({ path: 'currency', code: 'REQUIRED', message: 'Chọn ngoại tệ (không phải ' + BASE_CUR_ + ').' });
     if (!isDate_(p.rateDate) || p.rateDate > addDays_(todayVn_(), 1))
         errs.push({ path: 'rateDate', code: 'DATE_INVALID', message: 'Nhập ngày hợp lệ, không ở tương lai.' });
-    var e4 = fxE4_(p.rate);
+    var e4 = fxE4_(p.rate), buy4 = 0, sell4 = 0;
     if (!e4)
         errs.push({ path: 'rate', code: 'FX_INVALID', message: 'Nhập tỷ giá dạng số dương, tối đa 4 số lẻ.' });
+    if (p.buy !== undefined && p.buy !== null && String(p.buy).trim() !== '' && !(buy4 = fxE4_(p.buy)))
+        errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua: số dương, tối đa 4 số lẻ (hoặc để trống).' });
+    if (p.sell !== undefined && p.sell !== null && String(p.sell).trim() !== '' && !(sell4 = fxE4_(p.sell)))
+        errs.push({ path: 'sell', code: 'FX_INVALID', message: 'Tỷ giá bán: số dương, tối đa 4 số lẻ (hoặc để trống).' });
+    if (buy4 && sell4 && buy4 > sell4)
+        errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua không được lớn hơn tỷ giá bán.' });
     if (errs.length)
         throw err_('VALIDATION_FAILED', 'Dữ liệu chưa hợp lệ', errs);
     return runTx_(user, { requestId: req.requestId, action: 'fx.save', payload: p, failAt: req.failAt }, function (tx) {
         var same = tx.rows('FxRate').filter(function (r) { return r.currency === p.currency && r.rateDate === p.rateDate && r.source === 'MANUAL' && r.isDeleted !== 1; })[0], row;
         if (same)
-            row = tx.update('FxRate', same.id, { rateE4: e4, note: maxStr_(p.note, 200) }, p.ifVersion);
+            row = tx.update('FxRate', same.id, { rateE4: e4, buyE4: buy4, sellE4: sell4, note: maxStr_(p.note, 200) }, p.ifVersion);
         else
-            row = tx.insert('FxRate', { rateDate: p.rateDate, currency: p.currency, rateE4: e4, source: 'MANUAL', note: maxStr_(p.note, 200) });
-        return { result: { id: row.id, rate: fxText_(e4), replaced: !!same }, audit: [{ entityType: 'FxRate', entityId: row.id, action: same ? 'fx.update' : 'fx.create', diff: { currency: p.currency, date: p.rateDate, rate: fxText_(e4), before: same ? fxText_(same.rateE4) : null } }] };
+            row = tx.insert('FxRate', { rateDate: p.rateDate, currency: p.currency, rateE4: e4, buyE4: buy4, sellE4: sell4, source: 'MANUAL', note: maxStr_(p.note, 200) });
+        return { result: { id: row.id, rate: fxText_(e4), replaced: !!same }, audit: [{ entityType: 'FxRate', entityId: row.id, action: same ? 'fx.update' : 'fx.create', diff: { currency: p.currency, date: p.rateDate, rate: fxText_(e4), buy: buy4 ? fxText_(buy4) : '', sell: sell4 ? fxText_(sell4) : '', before: same ? fxText_(same.rateE4) : null } }] };
     });
 }
 // Lấy tỷ giá Google Finance cho một ngày (khi ngày đó chưa có tỷ giá nhập tay). Không đè tỷ giá nhập tay.
@@ -6311,6 +6331,7 @@ function bookDebtTotals_(led, filter) {
     res.net = res.AR.net - res.AP.net;
     return res;
 }
+var FX_BASIS_VN_ = { BUY: '(mua)', SELL: '(bán)', MID: '(chung)', '': '' };
 function fxRevalLines_(user, asOf, filter) {
     filter = filter || {};
     var led = loadLedger_(user, asOf), rates = repoValid_('FxRate'), agg = {}, miss = 0, noRate = {};
@@ -6319,7 +6340,7 @@ function fxRevalLines_(user, asOf, filter) {
         if (!b || b.out === 0 || !d || d.currency === BASE_CUR_ || (filter.currency && d.currency !== filter.currency) || (filter.group && d.businessGroupCode !== filter.group))
             return;
         var k = d.direction + '|' + d.currency, a = agg[k] = agg[k] || { dir: d.direction, cur: d.currency, out: 0, orig: 0, now: 0, conv: 0 }, dec = (currencyMap_()[d.currency] || { decimals: 0 }).decimals;
-        var dr = d.fxRateE4 > 0 ? d.fxRateE4 : ((fxFind_(d.currency, d.docDate, rates) || {}).rateE4 || 0), cr = (fxNearest_(d.currency, asOf, rates) || {}).rateE4 || 0;
+        var dr = d.fxRateE4 > 0 ? d.fxRateE4 : ((fxFind_(d.currency, d.docDate, rates) || {}).rateE4 || 0), cr = (fxClosing_(d.currency, asOf, rates, d.direction === 'AR' ? 'BUY' : 'SELL') || {}).e4 || 0;
         a.out += b.out;
         if (!cr)
             noRate[d.currency] = 1;
@@ -6331,16 +6352,21 @@ function fxRevalLines_(user, asOf, filter) {
         a.orig += fxToBase_(b.out, dec, dr);
         a.now += fxToBase_(b.out, dec, cr);
     });
+    var midFb = [];
     var items = Object.keys(agg).sort().map(function (k) {
-        var a = agg[k], n = fxNearest_(a.cur, asOf, rates);
-        a.rateE4 = n ? n.rateE4 : 0;
+        var a = agg[k], n = fxClosing_(a.cur, asOf, rates, a.dir === 'AR' ? 'BUY' : 'SELL');
+        a.rateE4 = n ? n.e4 : 0;
         a.rateDate = n ? n.rateDate : '';
+        a.basis = n ? n.basis : '';
+        a.unconv = a.out - a.conv;
+        if (n && n.basis === 'MID' && fxUsesSides_(a.cur, rates))
+            midFb.push((a.dir === 'AR' ? 'phải thu ' : 'phải trả ') + a.cur);
         a.diff = (a.dir === 'AR' ? 1 : -1) * (a.now - a.orig);
         return a;
     });
     // Tỷ giá cuối kỳ quá cũ (>7 ngày trước ngày chốt) vẫn được dùng nhưng phải cảnh báo để kế toán nhập tỷ giá đúng ngày chốt
     var stale = items.filter(function (a) { return a.rateDate && daysBetween_(a.rateDate, asOf) > 7; }).map(function (a) { return a.cur + ' (' + a.rateDate + ')'; }).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
-    return { items: items, missing: miss, noRate: Object.keys(noRate), stale: stale };
+    return { items: items, missing: miss, noRate: Object.keys(noRate), stale: stale, midFallback: midFb };
 }
 // ===== Quỹ ngoại tệ: tỷ giá xuất theo BÌNH QUÂN GIA QUYỀN DI ĐỘNG =====
 // Mỗi tài khoản quỹ ngoại tệ (Catalog CASH_ACCOUNT có tiền tệ khác VND) là một "kho" tiền: số dư đầu kỳ (định giá theo tỷ giá ngày đầu sổ) + phiếu thu (nhập, theo tỷ giá ngày thực thu) − phiếu chi (xuất theo bình quân di động).
@@ -6536,7 +6562,7 @@ function fxPoolReport_(user, req) {
     fxEntryGate_(user, 'fx.entry.read');
     var p = req.payload || {}, asOf = isDate_(p.asOf) ? p.asOf : todayVn_(), run = fxPoolRun_(null, asOf), rates = repoValid_('FxRate'), maOn = fxOutMethod_() === 'MOVING_AVG', pays = byId_(repoValid_('Payment')), xfers = byId_(xferRows_()), exs = byId_(exchRows_()), items = [];
     Object.keys(run.accounts).sort().forEach(function (code) {
-        var a = run.accounts[code], n = fxNearest_(a.currency, asOf, rates), mism = [];
+        var a = run.accounts[code], n0 = fxClosing_(a.currency, asOf, rates, 'BUY'), n = n0 && { rateE4: n0.e4, rateDate: n0.rateDate }, mism = [];
         a.events.forEach(function (e) {
             if (e.direction === 'XIN' || e.direction === 'EBUY')
                 return;
@@ -7478,7 +7504,7 @@ function fxPeriodItems_(periodId) {
         if (!a.conv && a.out)
             return;
         if (a.diff !== 0)
-            items.push({ entryType: 'UNREALIZED', currency: a.cur, direction: a.dir, foreignMinor: a.out, rateE4: a.rateE4, amountBaseMinor: a.diff, asOf: to, reversesId: '', note: FX_TYPE_VN_.UNREALIZED + ' ' + a.cur + ' ' + (a.dir === 'AR' ? 'phải thu' : 'phải trả') + ' tại ' + rptDateVn_(to) + ' theo tỷ giá ' + fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' });
+            items.push({ entryType: 'UNREALIZED', currency: a.cur, direction: a.dir, foreignMinor: a.conv, rateE4: a.rateE4, amountBaseMinor: a.diff, asOf: to, reversesId: '', note: FX_TYPE_VN_.UNREALIZED + ' ' + a.cur + ' ' + (a.dir === 'AR' ? 'phải thu' : 'phải trả') + ' tại ' + rptDateVn_(to) + ' theo tỷ giá ' + fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' });
     });
     // Quỹ tiền ngoại tệ: số dư cuối kỳ × tỷ giá cuối kỳ − giá trị ghi sổ (bình quân di động); tự đảo kỳ sau như công nợ.
     var cashPool = fxPoolRun_(null, to), cashAgg = {}, allRates = repoValid_('FxRate');
@@ -7495,7 +7521,9 @@ function fxPeriodItems_(periodId) {
         k.B += a.balB;
     });
     Object.keys(cashAgg).sort().forEach(function (c) {
-        var k = cashAgg[c], n = fxNearest_(c, to, allRates);
+        var k = cashAgg[c], n0 = fxClosing_(c, to, allRates, 'BUY'), n = n0 && { rateE4: n0.e4, rateDate: n0.rateDate };
+        if (n0 && n0.basis === 'MID' && fxUsesSides_(c, allRates))
+            warnings.push('Chưa nhập tỷ giá mua ở ngày chốt cho quỹ ' + c + ': dùng tỷ giá chung.');
         if (!n) {
             warnings.push('Chưa có tỷ giá ' + c + ' nào không sau ' + rptDateVn_(to) + ' nên chưa đánh giá lại quỹ.');
             return;
@@ -7507,6 +7535,7 @@ function fxPeriodItems_(periodId) {
     if (rv.missing)
         warnings.push(rv.missing + ' dòng công nợ ngoại tệ thiếu tỷ giá nên chưa đánh giá lại.');
     rv.noRate.forEach(function (c) { warnings.push('Chưa có tỷ giá ' + c + ' nào không sau ' + rptDateVn_(to) + '.'); });
+    rv.midFallback.forEach(function (c) { warnings.push('Chưa nhập tỷ giá ' + (c.indexOf('phải thu') === 0 ? 'mua' : 'bán') + ' ở ngày chốt cho ' + c + ': dùng tỷ giá chung.'); });
     rv.stale.forEach(function (c) { warnings.push('Tỷ giá cuối kỳ của ' + c + ' đã cũ (hơn 7 ngày trước ' + rptDateVn_(to) + '): nên nhập tỷ giá đúng ngày chốt rồi lập lại bút toán.'); });
     if (posted.length)
         warnings.push('Kỳ này đã có bút toán ghi nhận: chỉ thêm phần chênh lệch phát sinh thêm của "đã thực hiện"; đánh giá lại cuối kỳ cần đảo bút toán cũ trước nếu muốn tính lại.');
@@ -9157,17 +9186,19 @@ function rep13_(user, code, params) {
 }
 // R14: công nợ ngoại tệ còn lại quy đổi VND theo tỷ giá gần nhất không sau ngày chốt; chênh lệch CHƯA thực hiện chỉ để tham khảo (chưa ghi sổ).
 function rep14_(user, code, params) {
-    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Còn nợ (nguyên tệ)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
+    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Còn nợ đã quy đổi (nguyên tệ)', 'text', 'right'), col_('unconv', 'Chưa quy đổi – thiếu tỷ giá (nguyên tệ)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
         col_('orig', 'Quy đổi theo tỷ giá ghi nhận (VND)', 'money'), col_('now', 'Quy đổi theo tỷ giá ngày chốt (VND)', 'money'), col_('diff', 'Chênh lệch chưa thực hiện (VND)', 'money')]);
     var rv = fxRevalLines_(user, params.asOf, { currency: params.currency, group: params.group });
     rv.items.forEach(function (a) {
-        addRow_(rep, 'data', { dir: a.dir === 'AR' ? 'Phải thu' : 'Phải trả', currency: a.cur, amount: fmtMoney_(a.out, a.cur), rate: a.rateE4 ? fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' : 'chưa có', orig: a.orig, now: a.now, diff: a.diff }, BASE_CUR_);
+        addRow_(rep, 'data', { dir: a.dir === 'AR' ? 'Phải thu' : 'Phải trả', currency: a.cur, amount: fmtMoney_(a.conv, a.cur), unconv: a.unconv ? fmtMoney_(a.unconv, a.cur) : '', rate: a.rateE4 ? fxText_(a.rateE4) + ' ' + FX_BASIS_VN_[a.basis] + ' (' + rptDateVn_(a.rateDate) + ')' : 'chưa có', orig: a.orig, now: a.now, diff: a.diff }, BASE_CUR_);
     });
     if (!rep.rows.length)
         rep.notes.push('Không có công nợ ngoại tệ còn lại tại ngày chốt.');
     if (rv.missing)
         rep.notes.push(rv.missing + ' dòng công nợ thiếu tỷ giá ghi nhận hoặc tỷ giá ngày chốt nên chưa quy đổi VND (cột nguyên tệ vẫn đủ). Nhập tỷ giá ở menu Tỷ giá.');
     rv.noRate.forEach(function (c) { rep.notes.push('Chưa có tỷ giá ' + c + ' nào không sau ngày chốt.'); });
+    rv.midFallback.forEach(function (c) { rep.notes.push('Chưa nhập tỷ giá ' + (c.indexOf('phải thu') === 0 ? 'mua' : 'bán') + ' ở ngày chốt cho ' + c + ': tạm dùng tỷ giá chung.'); });
+    rep.notes.push('Đánh giá lại phải thu theo tỷ giá MUA, phải trả theo tỷ giá BÁN của ngân hàng (nhập ở menu Tỷ giá); chưa nhập mua/bán thì dùng tỷ giá chung.');
     rv.stale.forEach(function (c) { rep.notes.push('Tỷ giá ngày chốt của ' + c + ' đã cũ (hơn 7 ngày trước ngày chốt): nên nhập tỷ giá đúng ngày chốt trước khi dùng số chênh lệch này.'); });
     rep.notes.push('Chỉ đánh giá lại công nợ còn lại theo chứng từ bằng một tỷ giá/ngày; tiền ứng trước/trả trước chưa phân bổ không đánh giá lại (khoản trả trước thuộc nhóm phi tiền tệ).');
     rep.notes.push('Tỷ giá ngày chốt là tỷ giá gần nhất trong bảng tỷ giá không sau ngày chốt (báo cáo không tự lấy Google Finance). Chênh lệch chưa thực hiện chỉ để tham khảo ở báo cáo này; bút toán đánh giá lại tạo ở menu Tỷ giá → Bút toán chênh lệch.');

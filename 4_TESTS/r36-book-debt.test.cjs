@@ -72,4 +72,15 @@ suite('9. R14/bút toán đánh giá lại: cảnh báo tỷ giá cuối kỳ c�
   const r14=c.rep14_(full,'R14',{asOf:ASOF});ok(r14.notes.some(n=>/đã cũ/.test(n)),'R14 cảnh báo');ok(r14.notes.some(n=>/ứng trước.*không đánh giá lại/.test(n)),'R14 nêu rõ ứng trước không đánh giá lại');
   ok(!c.rep13_(full,'R13',{asOf:ASOF}).notes.some(n=>/chưa tự ghi bút toán/.test(n)),'R13 ghi chú đã cập nhật');
 });
+suite('10. Tỷ giá mua/bán: phải thu đánh giá lại theo MUA, phải trả theo BÁN; thiếu thì dùng tỷ giá chung và cảnh báo; R14 tách phần đã/chưa quy đổi',()=>{
+  const w=world(),c=w.ctx,fx=w.T.FxRate.find(r=>r.currency==='USD'&&r.rateE4===252000);ok(fx,'có tỷ giá 252.000 ngày 01/10');
+  let rv=c.fxRevalLines_(full,ASOF,{}),ar=rv.items.find(a=>a.dir==='AR'),ap=rv.items.find(a=>a.dir==='AP');
+  eq([ar.basis,ap.basis,ar.rateE4,ap.rateE4],['MID','MID',252000,252000],'chưa nhập mua/bán: tỷ giá chung');eq([...rv.midFallback],[],'chưa dùng mua/bán thì không cảnh báo');
+  eq([ar.out,ar.conv,ar.unconv],[110000,80000,30000],'R14: tổng = đã quy đổi + chưa quy đổi');
+  fx.buyE4=251500;fx.sellE4=252600;rv=c.fxRevalLines_(full,ASOF,{});ar=rv.items.find(a=>a.dir==='AR');ap=rv.items.find(a=>a.dir==='AP');
+  eq([ar.basis,ar.rateE4,ap.basis,ap.rateE4],['BUY',251500,'SELL',252600]);eq(ar.now,c.fxToBase_(80000,2,251500),'phải thu × tỷ giá mua');eq(ap.now,c.fxToBase_(50000,2,252600),'phải trả × tỷ giá bán');
+  eq([...c.fxRevalLines_(full,ASOF,{}).midFallback],[]);
+  fx.sellE4=0;rv=c.fxRevalLines_(full,ASOF,{});ok(rv.midFallback.some(x=>/phải trả USD/.test(x)),'có mua, thiếu bán → cảnh báo phải trả');eq(rv.items.find(a=>a.dir==='AP').basis,'MID');fx.sellE4=252600;
+  const r14=c.rep14_(full,'R14',{asOf:ASOF}),R=rows(r14),a=R.find(x=>x.dir==='Phải thu');ok(/\(mua\)/.test(a.rate)&&/\(bán\)/.test(R.find(x=>x.dir==='Phải trả').rate),'cột tỷ giá ghi mua/bán: '+a.rate);ok(/300/.test(a.unconv),'cột chưa quy đổi: '+a.unconv);
+});
 console.log('Tổng kiểm tra:',steps);

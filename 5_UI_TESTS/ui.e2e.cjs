@@ -870,6 +870,16 @@ await suite('48. R02/R03 có ô "Đơn hàng cụ thể" và "Tìm theo số đ�
   const col=await pg.evaluate(()=>getComputedStyle(document.querySelector('.report h2')).color);ok(/rgb\(17, 17, 17\)/.test(col),'tiêu đề chữ tối: '+col);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('49. Menu Tỷ giá có ô tỷ giá mua/bán; lưu gửi buy/sell lên máy chủ; bảng liệt kê cột Mua/Bán; mua > bán bị chặn ngay trên form',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/fx',900);
+  const fld=t=>pg.locator('.field',{hasText:t}).first();
+  eq(await fld('Tỷ giá mua của ngân hàng').locator('input').count(),1);eq(await fld('Tỷ giá bán của ngân hàng').locator('input').count(),1);
+  const th=await pg.locator('table th').allInnerTexts();ok(th.some(t=>/^Mua$/i.test(t.trim()))&&th.some(t=>/^Bán$/i.test(t.trim())),'cột Mua/Bán: '+th.join('|'));
+  await fld('Tỷ giá chung').locator('input').fill('25.200');await fld('Tỷ giá mua của ngân hàng').locator('input').fill('25.300');await fld('Tỷ giá bán của ngân hàng').locator('input').fill('25.100');
+  const n0=calls.filter(c=>c.action==='fx.save').length;await pg.getByText('Lưu tỷ giá nhập tay').first().click();await pg.waitForTimeout(500);eq(calls.filter(c=>c.action==='fx.save').length,n0,'mua > bán: không gửi');
+  await fld('Tỷ giá mua của ngân hàng').locator('input').fill('25.150');await fld('Tỷ giá bán của ngân hàng').locator('input').fill('25.250');await pg.getByText('Lưu tỷ giá nhập tay').first().click();await pg.waitForTimeout(900);
+  const sv=last(calls,'fx.save');ok(sv,'đã gửi fx.save');eq([sv.payload.buy,sv.payload.sell],['25150','25250']);eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;
