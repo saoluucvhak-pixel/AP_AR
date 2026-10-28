@@ -17,7 +17,9 @@ suite('1. Danh sách công nợ AR/AP: số dư, phân bổ, tổng theo tiền 
   for(const dir of ['AR','AP'])for(const u of [U,LIM]){const a=ledgerView(A,u,dir),b=ledgerView(B,u,dir);eq(a.total,b.total,'tổng bản ghi '+dir+' '+u.id);eq(J(a.totals),J(b.totals),'tổng tiền '+dir);eq(J(a.rows),J(b.rows),'từng chứng từ '+dir+' '+u.id)}
 });
 suite('2. Báo cáo R01/R02/R03/R07/R12 và bàn làm việc giống hệt',()=>{
-  const strip=r=>J({rows:r.rows.map(x=>[x.t,x.currency,x.cells]),notes:r.notes});
+  // R36: R02/R03 có thêm dòng tiền chưa phân bổ (ứng trước), dòng "gồm ứng trước" và một chú thích — thay đổi có chủ đích (kiểm ở r36-advance.test.cjs); bỏ riêng các dòng đó rồi so phần còn lại giống hệt bản gốc.
+  const R36_ROW=/ứng trước|trả trước/,R36_NOTE=/^Từng dòng chứng từ chỉ hiện phần đã phân bổ/;
+  const strip=r=>J({rows:r.rows.filter(x=>!R36_ROW.test(x.cells.desc||'')).map(x=>[x.t,x.currency,x.cells]),notes:r.notes.filter(n=>!R36_NOTE.test(n))});
   for(const code of ['R01','R02','R03','R07','R12']){const p={asOf:'2026-10-25'};const a=A.reportRun_(U,{payload:{code,params:p}}),b=B.reportRun_(U,{payload:{code,params:p}});eq(strip(a),strip(b),code)}
   const w=ctx=>J(ctx.dispatch_(U,'workbench.summary',{requestId:'w',payload:{asOf:'2026-10-25'}})).replace(/"(builtAt|setId|lastOkAt|lastAttemptAt|generatedAt)":"[^"]*"/g,'"$1":"-"');eq(w(A),w(B),'workbench');
   const d=ctx=>J(ctx.dispatch_(U,'dashboard.summary',{requestId:'d',payload:{asOf:'2026-10-25'}})).replace(/"(builtAt|setId|lastOkAt|lastAttemptAt|generatedAt)":"[^"]*"/g,'"$1":"-"');eq(d(A),d(B),'dashboard');

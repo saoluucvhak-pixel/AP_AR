@@ -87,7 +87,7 @@ if(process.env.SHOTS_DIR){const dir=process.env.SHOTS_DIR,tag=process.env.SHOTS_
   await browser.close();console.log('đã chụp',tag);return;}
 await suite('1. Mọi menu dựng xong, không lỗi JS/console; tên menu một dòng',async()=>{
   const w=build(),{pg,errs,calls}=await newPage(browser,w);
-  const acts=calls.map(c=>c.action);eq(acts.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+acts.join(','));eq(acts[0],'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status'].indexOf(x.action)<0))&&!acts.includes('dashboard.summary'),'khởi động không chờ batch tính số liệu nặng (chỉ cho phép lô huy hiệu nhẹ chạy sau)');ok(acts.includes('workbench.summary'),'tổng hợp tải riêng sau bootstrap');await go(pg,'#/workbench',700);
+  const subs=calls.flatMap(c=>c.action==='sys.batch'?(c.payload.calls||[]).map(x=>x.action):[c.action]),acts=calls.map(c=>c.action);eq(subs.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+subs.join(','));eq(calls[0].action==='sys.batch'?calls[0].payload.calls[0].action:calls[0].action,'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!subs.includes('dashboard.summary')&&!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status','app.bootstrap','workbench.summary'].indexOf(x.action)<0)),'khởi động không chờ batch tính số liệu nặng (chỉ bootstrap + tổng hợp Bàn làm việc, lô huy hiệu nhẹ chạy sau)');ok(subs.includes('workbench.summary'),'tổng hợp Bàn làm việc có tải ở khởi động (đi cùng lượt bootstrap)');await go(pg,'#/workbench',700);
   const links=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].map(a=>a.getAttribute('href')));ok(links.length>=10,'có menu: '+links.length);
   for(const l of links){if(/#\/(audit|backup)$/.test(l))continue;await go(pg,l,450);const bad=await pg.evaluate(()=>{const e=document.querySelector('.msg.danger,.error-box');return e?e.innerText.slice(0,120):''});if(bad&&!/flow|Luồng/i.test(l))errs.push(l+' → '+bad)}
   const wrapped=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].filter(a=>a.getBoundingClientRect().height>44).map(a=>a.textContent.trim()));
@@ -757,6 +757,53 @@ await suite('37. R35: tờ báo cáo giữ giấy trắng chữ đen khi giao di
     const lum=c=>{const m=c.match(/\d+/g).map(Number);return (0.299*m[0]+0.587*m[1]+0.114*m[2])};const o={};['g','s','d','t'].forEach(i=>{const cs=getComputedStyle(document.getElementById(i));o[i]={bg:lum(cs.backgroundColor),fg:lum(cs.color)}});return o});
   ['g','s','t'].forEach(k=>{ok(r[k].bg>200,'nền sáng ở dòng '+k+': '+JSON.stringify(r[k]));ok(r[k].fg<120,'chữ tối ở dòng '+k)});
   await pg.hover('.report tbody tr:nth-child(3) td');await pg.waitForTimeout(150);const hv=await pg.evaluate(()=>{const cs=getComputedStyle(document.getElementById('d'));const m=cs.backgroundColor.match(/\d+/g).map(Number);return m[0]+m[1]+m[2]});ok(hv>600,'di chuột không làm nền tối: '+hv);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('38. Khởi động: bootstrap + tổng hợp Bàn làm việc đi chung MỘT lượt sys.batch; Bàn làm việc dùng lại kết quả nạp trước, không gọi lại workbench.summary',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);
+  const first=calls[0];eq(first.action,'sys.batch','lượt đầu là sys.batch');eq(first.payload.calls.map(c=>c.action),['app.bootstrap','workbench.summary']);
+  eq(calls.filter(c=>c.action==='app.bootstrap').length,0,'không còn gọi app.bootstrap riêng');eq(calls.filter(c=>c.action==='workbench.summary').length,0,'Bàn làm việc không gọi lại workbench.summary');
+  ok(await pg.locator('.wb').count()>0,'Bàn làm việc hiển thị');ok(await pg.locator('.wb-todo .skeleton').count()===0,'khung chờ được thay bằng nội dung (không treo khi dữ liệu nạp trước trả về ngay)');
+  await pg.close();
+});
+await suite('39. Khởi động: lỗi trong lượt gộp (bootstrap không dùng được) → lùi về gọi app.bootstrap riêng; người dùng không có quyền vẫn thấy thông báo lỗi đăng nhập',async()=>{
+  const w=build();const cu=w.ctx.appBootstrap_;let n=0;w.ctx.routes_()['app.bootstrap'].fn=function(){n++;if(n===1)throw Object.assign(new Error('tạm lỗi'),{code:'INTERNAL_ERROR',userMessage:'tạm lỗi'});return cu.apply(this,arguments)};
+  const {pg,errs,calls}=await newPage(browser,w);await pg.waitForTimeout(2500);
+  ok(calls.some(c=>c.action==='app.bootstrap'),'lùi về app.bootstrap riêng khi lượt gộp lỗi');ok(await pg.locator('.wb').count()>0,'vẫn vào được Bàn làm việc');await pg.close();
+  const w2=build();w2.ctx.routes_()['app.bootstrap'].fn=function(){throw Object.assign(new Error('FORBIDDEN'),{code:'FORBIDDEN',userMessage:'Không có quyền'})};
+  const p2=await newPage(browser,w2);ok(await p2.pg.locator('.splash-card').count()>0,'hiện thông báo không đăng nhập được');await p2.pg.close();
+});
+await suite('40. R36: chi tiết đơn có USD đã ghi nhận hiện thẻ "Lãi gộp quy đổi VND (tham khảo)" theo tỷ giá chứng từ; khoản chưa lập hóa đơn không vào lãi; đơn chỉ VND không hiện thẻ',async()=>{
+  const w=build();w.T.DebtDoc.push(mkdoc('d9',{currency:'USD',fxRateE4:253000,docDate:'2026-10-01',postingDate:'2026-10-01'},100000));
+  w.T.Accrual.push({id:'ru1',orderId:'o1',kind:'REVENUE',partnerId:'p1',accrualDate:'2026-10-01',feeTypeCode:'F',description:'USD HĐ',netMinor:100000,vatMode:'NONE',vatMinor:0,grossMinor:100000,isPassThrough:0,currency:'USD',status:'INVOICED',docId:'d9',debtLineId:'',serviceCode:'FWD',version:1},
+    {id:'ru2',orderId:'o1',kind:'REVENUE',partnerId:'p1',accrualDate:'2026-10-02',feeTypeCode:'F',description:'USD chưa HĐ',netMinor:777700,vatMode:'NONE',vatMinor:0,grossMinor:777700,isPassThrough:0,currency:'USD',status:'OPEN',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
+  const {pg,errs}=await newPage(browser,w);await go(pg,'#/order/o1',900);
+  const card=pg.locator('[data-base-totals]');eq(await card.count(),1,'có thẻ quy đổi');const tx=await card.innerText();
+  ok(/Lãi gộp quy đổi VND/.test(tx),tx);ok(/25\.300/.test(tx),'1.000 USD × 25,30 = 25.300 VND: '+tx);ok(!/777/.test(tx.replace(/\s/g,'')),'khoản chưa lập hóa đơn (7.777 USD) không vào thẻ quy đổi');ok(/bình quân/.test(tx),'ghi tỷ giá bình quân');
+  await go(pg,'#/order/o2',900);eq(await pg.locator('[data-base-totals]').count(),0,'đơn chỉ VND không hiện thẻ quy đổi');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('41. R09 trên giao diện: có ô "Đơn hàng cụ thể" và "Tìm theo số đơn / PO"; chọn một đơn thì báo cáo chỉ còn đơn đó và tiêu đề ghi tên đơn',async()=>{
+  const w=build();w.T.Accrual.push({id:'r41',orderId:'o2',kind:'REVENUE',partnerId:'p2',accrualDate:'2026-10-05',feeTypeCode:'F',description:'DH-2 doanh thu',netMinor:700,vatMode:'NONE',vatMinor:0,grossMinor:700,isPassThrough:0,currency:'VND',status:'INVOICED',docId:'',debtLineId:'',serviceCode:'',version:1});
+  const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/reports',900);
+  await pg.evaluate(()=>{const c=document.querySelector('select');c.value='R09';c.dispatchEvent(new Event('change'))});await pg.waitForTimeout(600);
+  const fld=t=>pg.locator('.field',{hasText:t}).first();
+  eq(await fld('Đơn hàng cụ thể').locator('select').count(),1,'có ô chọn đơn hàng');eq(await fld('Tìm theo số đơn / PO').locator('input').count(),1,'có ô tìm số đơn/PO');
+  const opts=await fld('Đơn hàng cụ thể').locator('option').allInnerTexts();ok(opts.some(t=>/DH-1/.test(t))&&opts.some(t=>/DH-2/.test(t)),'danh sách đơn có DH-1, DH-2: '+opts.join('|'));
+  await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);let tx=await pg.locator('.report').innerText();ok(/DH-1/.test(tx)&&/DH-2/.test(tx),'chưa lọc: thấy cả hai đơn');
+  const val=await pg.evaluate(()=>{const s=[...document.querySelectorAll('.field')].find(f=>/Đơn hàng cụ thể/.test(f.textContent)).querySelector('select');const o=[...s.options].find(x=>/DH-2/.test(x.textContent));return o.value});
+  await fld('Đơn hàng cụ thể').locator('select').selectOption(val);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);tx=await pg.locator('.report').innerText();
+  ok(/DH-2/.test(tx)&&!/DH-1/.test(tx),'lọc DH-2: không còn DH-1: '+tx.slice(0,300));ok(/Đơn hàng: DH-2/.test(tx),'tiêu đề ghi đơn đang lọc');eq(last(calls,'report.run').payload.params.orderId,val,'gửi orderId lên máy chủ');
+  await fld('Đơn hàng cụ thể').locator('select').selectOption('');await fld('Tìm theo số đơn / PO').locator('input').fill('DH-1');await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);tx=await pg.locator('.report').innerText();
+  ok(/DH-1/.test(tx)&&!/DH-2/.test(tx),'tìm "DH-1": chỉ còn DH-1');ok(/số đơn\/PO chứa/.test(tx),'tiêu đề ghi điều kiện tìm');eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('42. Tổng hợp công nợ (tab Khách hàng/NCC) có cột "Còn nợ ròng (đã trừ tiền chưa phân bổ)" = còn nợ theo chứng từ − tiền chưa phân bổ',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await go(pg,'#/summary',1500);
+  const heads=await pg.locator('th').allInnerTexts();ok(heads.some(t=>/Còn nợ ròng/.test(t)),'có cột còn nợ ròng: '+heads.join('|'));
+  const d=await pg.evaluate(async()=>{const r=await api('summary.partners',{});return r.items.map(x=>({name:x.name,net:x.net,out:x.AR,adv:x.adv}))});
+  ok(d.length>0,'có đối tác');d.forEach(x=>['AR','AP'].forEach(dir=>{const cs=new Set([...Object.keys(x.out&&dir==='AR'?x.out:{}),...Object.keys((x.adv||{})[dir]||{})]);Object.keys(x.net[dir]).forEach(c=>ok(cs.has(c)||dir==='AP','net chỉ có ở tiền tệ có công nợ hoặc ứng trước')) }));
+  const hi=heads.findIndex(t=>/Còn nợ ròng/.test(t));const row=pg.locator('tbody tr',{hasText:'ABC'}).first();const cell=(await row.locator('td').allInnerTexts())[hi];
+  const abc=d.find(x=>x.name==='ABC'),n=abc&&abc.net.AR.VND;ok(n===undefined?/—/.test(cell):new RegExp('Phải thu').test(cell),'ô còn nợ ròng của ABC hiển thị đúng dạng: '+cell+' / net='+n);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
 await browser.close();

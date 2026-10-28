@@ -3401,6 +3401,8 @@ function reportLayout_(rep, label) {
         sub.push('Từ ' + rptDateVn_(p.from) + ' đến ' + rptDateVn_(p.to));
     if (rep.meta.partner)
         sub.push('Đối tác: ' + rep.meta.partner);
+    if (rep.meta.order)
+        sub.push('Đơn hàng: ' + rep.meta.order);
     if (p.currency)
         sub.push('Tiền tệ: ' + p.currency);
     if (p.group)
@@ -4389,7 +4391,8 @@ function orderTotals(accruals) {
         if (a.isPassThrough)
             t[rev ? 'passRevenue' : 'passCost'] += a.grossMinor;
         else {
-            t[rev ? 'revenueNet' : 'costNet'] += a.netMinor;
+            if (st === 'invoiced')
+                t[rev ? 'revenueNet' : 'costNet'] += a.netMinor;
             if (a.feeTypeCode === 'PASS_THROUGH')
                 t.passUnverified++;
         }
@@ -4517,6 +4520,51 @@ function orderReconcile_(oo, rows, proj) {
     });
     return { byCurrency: cur, splitMismatches: bad, childOk: ok && !bad.length };
 }
+
+function orderBaseTotals_(list, asOf, ctx, accById) {
+    var cm = currencyMap_(), out = { currency: BASE_CUR_, revenue: 0, cost: 0, margin: 0, marginPct: null, byCurrency: {}, missing: 0 }, pcache = {};
+    function parentTotals_(pid, cur) {
+        if (pcache[pid])
+            return pcache[pid];
+        var p = accById[pid], dec = (cm[cur] || { decimals: 0 }).decimals, res = pcache[pid] = { N: 0, B: 0, ok: true };
+        if (!p) {
+            res.ok = false;
+            return res;
+        }
+        var cand = Object.keys(ctx.byAcc[pid] || {}).map(function (k) { return ctx.byAcc[pid][k]; }).filter(function (d) { return d.docType !== 'ADJ_INC' && d.docType !== 'ADJ_DEC' && d.status === 'POSTED' && (d.postingDate || docEffDate_(d)) <= asOf && !(ctx.revOf[d.id] && ctx.revOf[d.id] <= asOf); });
+        var d0 = cand[0] || (p.docId ? ctx.docById[p.docId] : null);
+        function add(net, rate) {
+            res.N += net;
+            if (cur === BASE_CUR_)
+                res.B += net;
+            else if (rate > 0)
+                res.B += fxToBase_(net, dec, rate);
+            else
+                res.ok = false;
+        }
+        add(p.netMinor, d0 ? d0.fxRateE4 : 0);
+        (ctx.adjBy[pid] || []).forEach(function (x) { if (x.eff <= asOf)
+            add(x.net, x.rate); });
+        return res;
+    }
+    list.forEach(function (a) {
+        if (a.status !== 'INVOICED' || a.isPassThrough)
+            return;
+        var pid = a.sharedFrom || a.id, pt = parentTotals_(pid, a.currency);
+        if (!pt.ok) {
+            out.missing++;
+            return;
+        }
+        var base = !a.sharedFrom ? pt.B : (pt.N === 0 ? 0 : Number((BigInt(a.netMinor) * BigInt(pt.B) * BigInt(2) + BigInt(pt.N)) / (BigInt(pt.N) * BigInt(2)))), rev = a.kind === 'REVENUE', bc = out.byCurrency[a.currency] = out.byCurrency[a.currency] || { foreign: 0, base: 0 };
+        out[rev ? 'revenue' : 'cost'] += base;
+        bc.foreign += a.netMinor;
+        bc.base += base;
+    });
+    Object.keys(out.byCurrency).forEach(function (c) { var b = out.byCurrency[c], dec = (cm[c] || { decimals: 0 }).decimals; b.avgRate = b.foreign ? Math.round(b.base / (b.foreign / Math.pow(10, dec)) * 100) / 100 : null; });
+    out.margin = out.revenue - out.cost;
+    out.marginPct = out.revenue > 0 ? Math.round(out.margin * 10000 / out.revenue) / 100 : null;
+    return out;
+}
 function orderGet_(user, req) {
     requirePerm_(user, 'read');
     var o = repoFind_('Order', req.payload.id);
@@ -4538,6 +4586,7 @@ function orderGet_(user, req) {
         linked[a.docId] = { id: a.docId, docNo: a.docNo, status: a.docStatus, direction: a.kind === 'REVENUE' ? 'AR' : 'AP', invoiceNo: a.invoiceNo }; });
     var actx = accrualCtx_(), proj = acc.map(function (x) { return accrualAt_(x, todayVn_(), actx); }).filter(Boolean), oo = orderOut_(o, { pm: pm, accByOrder: { [o.id]: proj } });
     var rc = orderReconcile_(oo, out, proj);
+    oo.baseTotals = orderBaseTotals_(proj, todayVn_(), actx, byId_(repoValid_('Accrual')));
     return { order: oo, accruals: out, reconcile: rc, documents: Object.keys(linked).map(function (k) { return linked[k]; }), canEdit: can_(user, 'order.write') && o.status === 'OPEN', asOf: asOf };
 }
 function orderSave_(user, req) {
@@ -8378,15 +8427,24 @@ function rep02_(user, code, params) {
         return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
-    var grand = {}, cur = null, sub = null, n = 0, lastKey = '';
+    var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT';
+
+    led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
+        advBy[x.partnerId + '|' + x.currency] = (advBy[x.partnerId + '|' + x.currency] || 0) + b.unalloc; });
     function flush() { if (sub) {
         addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name, currency: sub.cur, gross: sub.g, settled: sub.s, out: sub.o }, sub.cur);
+        var adv = advBy[sub.key] || 0;
+        if (adv) {
+            addRow_(rep, 'data', { desc: (dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)'), currency: sub.cur, settled: adv, out: -adv }, sub.cur);
+            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
+            sumCur_(grand, sub.cur, 'a', adv);
+        }
     } }
     docs.forEach(function (d) {
         var key = d.partnerId + '|' + d.currency;
         if (key !== lastKey) {
             flush();
-            sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0 };
+            sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0, key: key };
             addRow_(rep, 'group', { desc: sub.name + ' (' + d.currency + ')' }, d.currency);
             lastKey = key;
         }
@@ -8401,9 +8459,17 @@ function rep02_(user, code, params) {
         sumCur_(grand, d.currency, 'o', b.out);
     });
     flush();
-    Object.keys(grand).sort().forEach(function (c) { addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c); });
+    Object.keys(grand).sort().forEach(function (c) {
+        addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
+        var ga = grand[c].a || 0;
+        if (ga) {
+            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)', currency: c, settled: ga, out: -ga }, c);
+            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
+        }
+    });
     if (!docs.length)
         rep.notes.push('Không có chứng từ phù hợp bộ lọc.');
+    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện thành dòng riêng ở cuối mỗi đối tác; dòng "gồm ứng trước" là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
     rep.notes.push('Ô "Đến hạn" hiển thị — khi chưa có căn cứ hạn thanh toán; không suy từ ngày hóa đơn.');
     rep.signatures = true;
     return rep;
@@ -8983,7 +9049,7 @@ function accrualCtx_() {
         var d = docById[l.docId], aid = lineAcc[l.adjustsLineId];
         if (!aid || !d || (d.docType !== 'ADJ_INC' && d.docType !== 'ADJ_DEC') || d.status !== 'POSTED')
             return;
-        (adjBy[aid] = adjBy[aid] || []).push({ eff: d.postingDate || docEffDate_(d), net: l.netMinor || 0, gross: l.grossMinor || 0 });
+        (adjBy[aid] = adjBy[aid] || []).push({ eff: d.postingDate || docEffDate_(d), net: l.netMinor || 0, gross: l.grossMinor || 0, rate: d.fxRateE4 || 0 });
     });
     return { docById: docById, byAcc: byAcc, revOf: revOf, adjBy: adjBy, accById: byId_(repoValid_('Accrual')), splitsBy: groupBy_(repoValid_('AccrualSplit'), function (x) { return x.accrualId; }) };
 }
@@ -9058,12 +9124,12 @@ function accrualAt_(a, asOf, ctx) {
 }
 function rep09_(user, code, params) {
     var D = orderListData_(user, params.asOf, true), rep = newReport_(code, params, [col_('stt', 'STT', 'int', 'center'), col_('order', 'Đơn hàng'), col_('po', 'Số PO'), col_('customer', 'Khách hàng'), col_('svc', 'Mã dịch vụ'), col_('hsdv', 'Số HSDV'), col_('dept', 'Bộ phận thực hiện'),
-        col_('rev', 'Doanh thu dịch vụ (trước thuế)', 'money'), col_('cost', 'Chi phí dịch vụ (trước thuế)', 'money'), col_('margin', 'Lãi gộp dịch vụ', 'money'), col_('pct', 'Tỷ suất', 'text', 'right'),
+        col_('rev', 'Doanh thu dịch vụ đã ghi nhận (trước thuế)', 'money'), col_('cost', 'Chi phí dịch vụ đã ghi nhận (trước thuế)', 'money'), col_('margin', 'Lãi gộp dịch vụ (đã ghi nhận)', 'money'), col_('pct', 'Tỷ suất', 'text', 'right'),
         col_('passRev', 'Chi hộ (thu lại của khách)', 'money'), col_('passCost', 'Thu hộ (trả lại khách)', 'money'), col_('passGap', 'Chênh lệch hộ (chi hộ − thu hộ, chưa đối ứng)', 'money'), col_('state', 'Tình trạng số liệu'),
         col_('unRev', 'Doanh thu chưa lập HĐ (đã gồm thuế)', 'money'), col_('unCost', 'Chi phí chưa nhận HĐ (đã gồm thuế)', 'money'), col_('invRev', 'Doanh thu đang lập HĐ', 'money'), col_('invCost', 'Chi phí đang lập HĐ', 'money')]);
-    var asOf = params.asOf, docById = accrualCtx_(), accBy = {};
+    var asOf = params.asOf, docById = accrualCtx_(), accBy = {}, qOrder = normText_(params.q || '');
     Object.keys(D.accByOrder).forEach(function (id) { accBy[id] = D.accByOrder[id].map(function (a) { return accrualAt_(a, asOf, docById); }).filter(Boolean); });
-    var rows = D.orders.filter(function (o) { return (o.status !== 'CANCELLED' || (o.cancelledDate && o.cancelledDate > asOf)) && (!o.orderDate || o.orderDate <= asOf) && (!params.partnerId || o.customerPartnerId === params.partnerId) && (!params.group || o.businessGroupCode === params.group) && (!params.from || o.orderDate >= params.from) && (!params.to || o.orderDate <= params.to); })
+    var rows = D.orders.filter(function (o) { return (o.status !== 'CANCELLED' || (o.cancelledDate && o.cancelledDate > asOf)) && (!o.orderDate || o.orderDate <= asOf) && (!params.partnerId || o.customerPartnerId === params.partnerId) && (!params.group || o.businessGroupCode === params.group) && (!params.from || o.orderDate >= params.from) && (!params.to || o.orderDate <= params.to) && (!params.orderId || o.id === params.orderId) && (!qOrder || normText_(o.orderNo).indexOf(qOrder) >= 0 || normText_(o.poNo).indexOf(qOrder) >= 0); })
         .sort(function (a, b) { return cmpStr_(a.orderDate, b.orderDate) || cmpStr_(a.orderNo, b.orderNo); });
     function zero() { return { rev: 0, cost: 0, passRev: 0, passCost: 0, un: 0, unc: 0, inv: 0, invc: 0, unv: 0, hasRev: false }; }
     function add(e, t) { e.rev += t.revenueNet; e.cost += t.costNet; e.passRev += t.passRevenue; e.passCost += t.passCost; e.un += t.uninvoicedRevenue; e.unc += t.uninvoicedCost; e.inv += t.invoicingRevenue; e.invc += t.invoicingCost; e.unv += t.passUnverified; if (t.revenueNet > 0)
@@ -9071,18 +9137,32 @@ function rep09_(user, code, params) {
     function stateOf(e) {
         if (e.hasRev && e.cost === 0)
             return 'Chưa đủ dữ liệu: chưa có chi phí';
-        if (e.un || e.unc || e.inv || e.invc || e.unv || e.passRev !== e.passCost)
-            return 'Lợi nhuận tạm tính' + (e.unv ? ' (có ' + e.unv + ' khoản chi hộ chờ xác minh)' : '') + (e.passRev !== e.passCost ? ' (số hộ chưa đối ứng)' : '');
-        return 'Đủ dữ liệu';
+        var parts = [];
+        if (e.un || e.unc || e.inv || e.invc)
+            parts.push('còn khoản chưa/đang lập hóa đơn (chưa tính vào lãi)');
+        if (e.unv)
+            parts.push(e.unv + ' khoản chi hộ chờ xác minh');
+        if (e.passRev !== e.passCost)
+            parts.push('số hộ chưa đối ứng');
+        return parts.length ? 'Lãi gộp theo khoản đã ghi nhận – ' + parts.join('; ') : 'Đủ dữ liệu';
     }
     function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? Math.round((e.rev - e.cost) * 10000 / e.rev) / 100 + '%' : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
-    var byCur = {}, n = 0;
+    if (params.orderId || qOrder) {
+        var fo = params.orderId ? D.orders.filter(function (x) { return x.id === params.orderId; })[0] : null;
+        rep.meta.order = params.orderId ? (fo ? fo.orderNo + (fo.poNo ? ' · PO ' + fo.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
+    }
+    var byCur = {}, n = 0, baseRows = [], accBase = byId_(repoValid_('Accrual'));
     rows.forEach(function (o) {
         var accs = accBy[o.id] || [], buckets = [];
         orderServices_(o).forEach(function (sv) { buckets.push({ code: sv.code, hsdv: sv.hsdvNo || '', list: accs.filter(function (a) { return !a.sharedFrom && accrualServiceCode_(a, o) === sv.code; }) }); });
         buckets.push({ code: '', hsdv: '', list: accs.filter(function (a) { return a.sharedFrom || !accrualServiceCode_(a, o); }) });
         buckets.forEach(function (bk) {
             var t = orderTotals(bk.list);
+            if (!params.currency) {
+                var bt = orderBaseTotals_(bk.list, asOf, docById, accBase);
+                if (bt.revenue || bt.cost || bt.missing)
+                    baseRows.push({ o: o, svc: bk.code, hsdv: bk.hsdv, dept: bk.code ? serviceDept_(bk.code) : '', bt: bt });
+            }
             Object.keys(t).forEach(function (c) {
                 if (params.currency && c !== params.currency)
                     return;
@@ -9090,10 +9170,10 @@ function rep09_(user, code, params) {
             });
         });
     });
-    var genAll = (params.partnerId || params.group) ? [] : costsOutsideOrders_(user).map(function (x) { var aa = accrualAt_(x.a, asOf, docById); return aa ? { a: aa, splits: x.splits } : null; }).filter(Boolean).filter(function (x) { var a = x.a; return !x.splits.length && a.status !== 'CANCELLED' && (!params.currency || a.currency === params.currency) && (!params.from || a.accrualDate >= params.from) && (!params.to || a.accrualDate <= params.to); });
+    var genAll = (params.partnerId || params.group || params.orderId || qOrder) ? [] : costsOutsideOrders_(user).map(function (x) { var aa = accrualAt_(x.a, asOf, docById); return aa ? { a: aa, splits: x.splits } : null; }).filter(Boolean).filter(function (x) { var a = x.a; return !x.splits.length && a.status !== 'CANCELLED' && (!params.currency || a.currency === params.currency) && (!params.from || a.accrualDate >= params.from) && (!params.to || a.accrualDate <= params.to); });
     genAll.forEach(function (x) { byCur[x.a.currency] = byCur[x.a.currency] || []; });
     Object.keys(byCur).sort().forEach(function (c) {
-        addRow_(rep, 'group', { order: 'Tiền tệ ' + c }, c);
+        addRow_(rep, 'group', { stt: 'Tiền tệ ' + c }, c);
         var T = zero();
         byCur[c].forEach(function (x) {
             var e = zero();
@@ -9118,18 +9198,56 @@ function rep09_(user, code, params) {
             var pe = perCode[''] = perCode[''] || (order.push(''), zero());
             add(pe, orderTotals(gen.map(function (x) { return x.a; }))[c]);
         }
-        addRow_(rep, 'group', { order: 'Tổng hợp theo mã dịch vụ – ' + c }, c);
+        addRow_(rep, 'group', { stt: 'Tổng hợp theo mã dịch vụ – ' + c }, c);
         order.sort().forEach(function (k) {
             addRow_(rep, 'subtotal', out(perCode[k], { order: k || '(chưa gắn mã / chi phí chung / chia nhiều đơn)', svc: k || '—', dept: k ? serviceDept_(k) || '—' : '—' }), c);
         });
     });
+    if (!params.currency && Object.keys(byCur).some(function (c) { return c !== BASE_CUR_; })) {
+
+        addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – chỉ khoản đã ghi nhận, theo tỷ giá lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
+        var BT = zero(), perB = {}, orderB = [], nb = 0, missB = 0;
+        function eb(bt) { var e = zero(); e.rev = bt.revenue; e.cost = bt.cost; e.hasRev = bt.revenue > 0; return e; }
+        function stB(cells, miss) { if (miss)
+            cells.state = 'Thiếu tỷ giá: ' + miss + ' khoản đã ghi nhận chưa được tính'; return cells; }
+        baseRows.forEach(function (x) {
+            addRow_(rep, 'data', stB(out(eb(x.bt), { stt: ++nb, order: x.o.orderNo, po: x.o.poNo || '—', customer: partnerName_(D.pm, x.o.customerPartnerId), svc: x.svc || '(chưa gắn mã)', hsdv: x.hsdv || '—', dept: x.dept || '—' }), x.bt.missing), BASE_CUR_);
+            BT.rev += x.bt.revenue;
+            BT.cost += x.bt.cost;
+            missB += x.bt.missing;
+            var k = x.svc || '', pe = perB[k] = perB[k] || (orderB.push(k), zero());
+            pe.rev += x.bt.revenue;
+            pe.cost += x.bt.cost;
+            pe.hasRev = pe.hasRev || x.bt.revenue > 0;
+        });
+        if (genAll.length) {
+            var gb = orderBaseTotals_(genAll.map(function (x) { return x.a; }), asOf, docById, accBase);
+            if (gb.revenue || gb.cost || gb.missing) {
+                addRow_(rep, 'data', stB(out(eb(gb), { stt: ++nb, order: 'Chi phí chung', po: '—', customer: '(không thuộc đơn hàng)', svc: '(chưa gắn mã)', hsdv: '—', dept: '—' }), gb.missing), BASE_CUR_);
+                BT.rev += gb.revenue;
+                BT.cost += gb.cost;
+                missB += gb.missing;
+                var pg = perB[''] = perB[''] || (orderB.push(''), zero());
+                pg.rev += gb.revenue;
+                pg.cost += gb.cost;
+            }
+        }
+        BT.hasRev = BT.rev > 0;
+        addRow_(rep, 'total', stB(out(BT, { order: 'TỔNG QUY ĐỔI ' + BASE_CUR_ }), missB), BASE_CUR_);
+        addRow_(rep, 'group', { stt: 'Tổng hợp theo mã dịch vụ – quy đổi ' + BASE_CUR_ }, BASE_CUR_);
+        orderB.sort().forEach(function (k) {
+            addRow_(rep, 'subtotal', out(perB[k], { order: k || '(chưa gắn mã / chi phí chung / chia nhiều đơn)', svc: k || '—', dept: k ? serviceDept_(k) || '—' : '—' }), BASE_CUR_);
+        });
+    }
     if (!rep.rows.length)
         rep.notes.push('Chưa có đơn hàng/khoản phát sinh trong bộ lọc.');
     rep.notes.push('Tính tại ngày chốt ' + asOf + ': chỉ gồm đơn hàng và khoản phát sinh có ngày đến ngày này. Khoản đã hủy vẫn được tính tại các ngày chốt trước ngày hủy (ngày hủy được lưu từ bản này; khoản hủy từ bản cũ chưa có ngày hủy nên vẫn bị loại ở mọi ngày chốt). Khoản đã lập hóa đơn tính theo ngày ghi nhận hóa đơn (ghi nhận sau ngày chốt thì tại ngày chốt vẫn là "chưa lập HĐ").');
     rep.notes.push('Trạng thái hóa đơn: "chưa lập HĐ" (OPEN) + "đang lập HĐ" (hóa đơn nháp/chờ duyệt, INVOICING) + "đã ghi nhận công nợ" (INVOICED) = tổng khoản hợp lệ; các cột HĐ là số đã gồm thuế và gồm cả khoản hộ vì vẫn là nghĩa vụ phải thu/phải trả.');
     rep.notes.push('Doanh thu dịch vụ và chi phí dịch vụ KHÔNG gồm thu hộ/chi hộ. Chi hộ (phải thu lại của khách) và thu hộ (phải trả lại khách) hiện ở cột riêng; "Chênh lệch hộ" = chi hộ − thu hộ là số hộ chưa đối ứng, không phải lợi nhuận và không tự đưa vào lãi gộp. Chi phí loại "Chi hộ" nhưng chưa đánh dấu chi hộ được nêu là "chờ xác minh" ở cột tình trạng.');
-    rep.notes.push('Mỗi đơn được tách theo mã dịch vụ của khoản (mỗi mã một dòng, kèm số HSDV và bộ phận thực hiện); khoản chia cho nhiều đơn, chi phí chung và khoản cũ chưa gắn mã nằm ở dòng "chưa gắn mã". Cuối mỗi tiền tệ có bảng tổng hợp theo mã. Lãi gộp tính theo từng tiền tệ, không quy đổi hay cộng chéo VND với USD.');
-    rep.notes.push('Tình trạng số liệu: "Chưa đủ dữ liệu" khi có doanh thu dịch vụ nhưng chưa có chi phí dịch vụ; "Lợi nhuận tạm tính" khi còn khoản chưa/đang lập hóa đơn, số hộ chưa đối ứng hoặc chi hộ chờ xác minh.');
+    rep.notes.push('Mỗi đơn được tách theo mã dịch vụ của khoản (mỗi mã một dòng, kèm số HSDV và bộ phận thực hiện); khoản chia cho nhiều đơn, chi phí chung và khoản cũ chưa gắn mã nằm ở dòng "chưa gắn mã". Cuối mỗi tiền tệ có bảng tổng hợp theo mã. Lãi gộp ở các phần trên tính theo từng tiền tệ, không cộng chéo; số quy đổi VND chỉ nằm ở phần "Quy đổi VND" riêng bên dưới.');
+    rep.notes.push('Doanh thu, chi phí và lãi gộp CHỈ tính khoản đã lập hóa đơn (đã ghi nhận); khoản chưa/đang lập hóa đơn chưa là doanh thu/chi phí ghi nhận nên không vào lãi (xem các cột HĐ). Tình trạng số liệu: "Chưa đủ dữ liệu" khi có doanh thu dịch vụ nhưng chưa có chi phí dịch vụ; "Lãi gộp theo khoản đã ghi nhận – …" khi còn khoản chưa/đang lập hóa đơn, số hộ chưa đối ứng hoặc chi hộ chờ xác minh.');
+    if (!params.currency)
+        rep.notes.push('Phần "Quy đổi VND" (tham khảo, hiện khi có tiền tệ khác VND): chỉ khoản đã ghi nhận, mỗi lần ghi nhận (hóa đơn gốc và từng điều chỉnh) quy đổi theo tỷ giá đã lưu trên chính chứng từ đó; khoản đã ghi nhận mà chứng từ chưa có tỷ giá không được tính và ghi ở cột Tình trạng. Chọn một tiền tệ cụ thể thì không hiện phần này.');
     rep.signatures = true;
     return rep;
 }
@@ -9914,6 +10032,9 @@ function summaryPartners_(user, req) {
     });
     var items = Object.keys(by).map(function (k) { return by[k]; }), totals = { AR: {}, AP: {} };
     items.sort(function (a, b) { return cmpStr_(a.name, b.name); });
+
+    items.forEach(function (o) { o.net = { AR: {}, AP: {} }; ['AR', 'AP'].forEach(function (dir) { var cs = {}; Object.keys(o[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(o.adv[dir]).forEach(function (c) { cs[c] = 1; }); Object.keys(cs).forEach(function (c) { var n = (o[dir][c] ? o[dir][c].out : 0) - (o.adv[dir][c] || 0); if (n)
+        o.net[dir][c] = n; }); }); });
     items.forEach(function (o) { ['AR', 'AP'].forEach(function (dir) { Object.keys(o[dir]).forEach(function (c) { var t = totals[dir][c] = totals[dir][c] || { out: 0, overdue: 0, due7: 0, missing: 0 }, x = o[dir][c]; t.out += x.out; t.overdue += x.overdue; t.due7 += x.due7; t.missing += x.missing; }); }); });
     return { meta: rmMeta_(r), items: items, totals: totals };
 }

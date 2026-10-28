@@ -4,7 +4,7 @@ vm.runInContext(fs.readFileSync((process.env.BACKEND_SRC||require('path').join(_
 const code=f=>{try{f();return 'OK'}catch(e){if(process.env.DBG)console.log(e.message);return e.code||e.message}};
 const cat=(id,type,c,a)=>({id,catalogType:type,code:c,name:c+' tên',attrsJson:JSON.stringify(a||{}),active:1,sortOrder:1,version:1});
 const sv=JSON.stringify([{code:'FWD',hsdvNo:'GML/FWD/ABC-26/001'},{code:'CBT',hsdvNo:'GML/CBT/ABC-26/001'}]);
-const ac=(id,kind,net,svc,o)=>Object.assign({id,orderId:'o1',kind,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:0,currency:'VND',status:'OPEN',docId:'',debtLineId:'',serviceCode:svc,version:1},o||{});
+const ac=(id,kind,net,svc,o)=>Object.assign({id,orderId:'o1',kind,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:0,currency:'VND',status:'INVOICED',docId:'',debtLineId:'',serviceCode:svc,version:1},o||{});
 const T={Catalog:[cat('c1','CURRENCY','VND',{decimals:0}),cat('c2','BUSINESS_GROUP','G1'),cat('s1','SERVICE_CODE','FWD',{department:'Forwarding'}),cat('s2','SERVICE_CODE','CBT',{department:'Vận tải xuyên biên giới'}),cat('f','FEE_TYPE','F')],
  Partner:[{id:'p1',shortName:'ABC',legalName:'A',isCustomer:1,isSupplier:1,status:'ACTIVE',scopeTags:'',taxCode:''}],
  Order:[{id:'o1',orderNo:'DH-1',poNo:'PO1',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-10-01',status:'OPEN',servicesJson:sv,serviceCode:'FWD',hsdvNo:'GML/FWD/ABC-26/001',version:1}],

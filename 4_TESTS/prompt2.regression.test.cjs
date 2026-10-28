@@ -94,15 +94,16 @@ suite('B2. Báo cáo quá khứ trước/sau ngày hủy khoản và hủy đơn
   w.T.Order.push({id:'o1',orderNo:'DH-1',poNo:'P1',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-09-01',status:'OPEN',servicesJson:J([{code:'FWD',hsdvNo:'N1'}]),serviceCode:'FWD',hsdvNo:'N1',version:1});
   const mk=(id,k,net,d)=>({id,orderId:'o1',kind:k,partnerId:'p1',accrualDate:d,feeTypeCode:'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:0,currency:'VND',status:'OPEN',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
   w.T.Accrual.push(mk('r1','REVENUE',1000,'2026-09-10'),mk('c1','COST',300,'2026-09-12'));
-  const r9=asOf=>{const t=w.ctx.rep09_(full,'R09',{asOf}).rows.filter(r=>r.t==='total')[0];return t?t.cells:{rev:0,cost:0}};
-  eq(r9('2026-09-30').rev,1000);eq(r9('2026-09-30').cost,300);
+  const r9=asOf=>{const t=w.ctx.rep09_(full,'R09',{asOf}).rows.filter(r=>r.t==='total')[0];return t?t.cells:{unRev:0,unCost:0}};
+  // khoản chưa lập hóa đơn (OPEN) chưa là doanh thu/chi phí ghi nhận: theo dõi ở cột chưa lập HĐ
+  eq(r9('2026-09-30').unRev,1000);eq(r9('2026-09-30').unCost,300);eq(r9('2026-09-30').rev,0,'chưa lập HĐ thì chưa vào doanh thu');
   call(w,'accrualCancel_',full,{id:'c1'});   // hủy chi phí ngày 23/10
-  eq(r9('2026-09-30').cost,300,'tại 30/09 chi phí đã hủy sau đó vẫn còn');eq(r9('2026-10-22').cost,300,'trước ngày hủy vẫn còn');eq(r9('2026-10-23').cost,0,'từ ngày hủy trở đi không còn');
+  eq(r9('2026-09-30').unCost,300,'tại 30/09 chi phí đã hủy sau đó vẫn còn');eq(r9('2026-10-22').unCost,300,'trước ngày hủy vẫn còn');eq(r9('2026-10-23').unCost,0,'từ ngày hủy trở đi không còn');
   eq(w.ctx.dashboardUninvoicedLive_(full,{payload:{asOf:'2026-09-30'}}).uninvoiced.VND.cost,300,'chưa lập hóa đơn tại 30/09 gồm khoản hủy sau đó');
   eq((w.ctx.dashboardUninvoicedLive_(full,{payload:{asOf:'2026-10-23'}}).uninvoiced.VND||{cost:0}).cost,0);
   // hủy đơn: đơn và khoản của đơn
   call(w,'orderSetStatus_',full,{id:'o1',status:'CANCELLED'});eq(w.T.Order[0].cancelledDate,'2026-10-23');
-  eq(r9('2026-09-30').rev,1000,'đơn hủy ngày 23/10 vẫn nằm trong báo cáo 30/09');eq(r9('2026-10-23').rev,0);
+  eq(r9('2026-09-30').unRev,1000,'đơn hủy ngày 23/10 vẫn nằm trong báo cáo 30/09');eq(r9('2026-10-23').unRev,0);
 });
 suite('C. Khoản OPEN → INVOICING → INVOICED không mất, không trùng',()=>{
   const w=world('2026-10-23');
@@ -128,15 +129,19 @@ suite('C. Khoản OPEN → INVOICING → INVOICED không mất, không trùng',(
 suite('D. Thu hộ/chi hộ tách khỏi lợi nhuận; phí dịch vụ riêng; từng tiền tệ',()=>{
   const w=world('2026-10-23');
   w.T.Order.push({id:'o1',orderNo:'DH-1',poNo:'P1',customerPartnerId:'p1',businessGroupCode:'G1',currency:'VND',orderDate:'2026-10-01',status:'OPEN',servicesJson:J([{code:'FWD',hsdvNo:'N1'}]),serviceCode:'FWD',hsdvNo:'N1',version:1});
-  const mk=(id,k,net,cur,pass,fee)=>({id,orderId:'o1',kind:k,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:fee||'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:pass?1:0,currency:cur,status:'OPEN',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
+  const mk=(id,k,net,cur,pass,fee,st)=>({id,orderId:'o1',kind:k,partnerId:'p1',accrualDate:'2026-10-05',feeTypeCode:fee||'F',description:'x',netMinor:net,vatMode:'NONE',vatMinor:0,grossMinor:net,isPassThrough:pass?1:0,currency:cur,status:st||'INVOICED',docId:'',debtLineId:'',serviceCode:'FWD',version:1});
   w.T.Accrual.push(mk('svc_r','REVENUE',1000,'VND'),mk('svc_c','COST',400,'VND'),mk('pass_r','REVENUE',300,'VND',true),mk('pass_c','COST',300,'VND',true),mk('usd_r','REVENUE',50,'USD'));
   let t=w.ctx.orderTotals(w.T.Accrual.map(a=>a))['VND'],u=w.ctx.orderTotals(w.T.Accrual)['USD'];
   eq(t.revenueNet,1000,'doanh thu dịch vụ không gồm thu hộ');eq(t.costNet,400);eq(t.margin,600,'lãi gộp chỉ từ phí dịch vụ');eq(t.passRevenue,300);eq(t.passCost,300);eq(t.passGap,0,'thu hộ = chi hộ: cân');eq(u.revenueNet,50,'USD tách riêng');eq(t.revenueNet+u.revenueNet===1050,true,'(chỉ để kiểm tra không có hàm cộng chéo)');
-  const rep=w.ctx.rep09_(full,'R09',{asOf:'2026-10-23'}),tots=rep.rows.filter(r=>r.t==='total');eq(tots.length,2,'mỗi tiền tệ một dòng tổng');
+  const rep=w.ctx.rep09_(full,'R09',{asOf:'2026-10-23'}),tots=rep.rows.filter(r=>r.t==='total'&&!/QUY ĐỔI/.test(r.cells.order));eq(tots.length,2,'mỗi tiền tệ một dòng tổng (không tính dòng tổng quy đổi VND)');
   const v=tots.find(r=>r.currency==='VND').cells;eq(v.margin,600);eq(v.passGap,0);eq(tots.find(r=>r.currency==='USD').cells.rev,50);
   // chi hộ lệch: không tự thành lợi nhuận
   w.T.Accrual[3].netMinor=w.T.Accrual[3].grossMinor=200;t=w.ctx.orderTotals(w.T.Accrual)['VND'];eq(t.margin,600,'lệch số hộ không làm đổi lãi gộp');eq(t.passGap,100,'số hộ chưa đối ứng = 100');
-  const v2=w.ctx.rep09_(full,'R09',{asOf:'2026-10-23'}).rows.filter(r=>r.t==='total'&&r.currency==='VND')[0].cells;ok(/tạm tính/.test(v2.state),'tình trạng: lợi nhuận tạm tính');
+  const v2=w.ctx.rep09_(full,'R09',{asOf:'2026-10-23'}).rows.filter(r=>r.t==='total'&&r.currency==='VND')[0].cells;ok(/số hộ chưa đối ứng/.test(v2.state),'tình trạng: số hộ chưa đối ứng');
+  // nguyên tắc: có hóa đơn mới ghi nhận doanh thu/chi phí — khoản chưa lập (OPEN) và đang lập (INVOICING) không vào doanh thu/chi phí/lãi
+  const w5=world('2026-10-23');w5.T.Order.push(w.T.Order[0]);w5.T.Accrual.push(mk('i_r','REVENUE',1000,'VND',false,'F','INVOICED'),mk('i_c','COST',400,'VND',false,'F','INVOICED'),mk('o_r','REVENUE',5000,'VND',false,'F','OPEN'),mk('n_c','COST',700,'VND',false,'F','INVOICING'));
+  const t5=w5.ctx.orderTotals(w5.T.Accrual)['VND'];eq(t5.revenueNet,1000,'chỉ khoản đã lập hóa đơn là doanh thu');eq(t5.costNet,400);eq(t5.margin,600,'lãi gộp không gồm khoản chưa/đang lập hóa đơn');eq(t5.uninvoicedRevenue,5000,'khoản chưa lập vẫn hiện ở cột chưa lập HĐ');eq(t5.invoicingCost,700);eq(t5.revenueGross,6000,'đối chiếu tổng khoản hợp lệ vẫn đủ');
+  const v5=w5.ctx.rep09_(full,'R09',{asOf:'2026-10-23'}).rows.filter(r=>r.t==='total'&&r.currency==='VND')[0].cells;eq(v5.rev,1000);eq(v5.margin,600);ok(/chưa tính vào lãi/.test(v5.state),'tình trạng nói rõ khoản chưa lập HĐ chưa tính vào lãi: '+v5.state);
   // doanh thu chưa có chi phí: chưa đủ dữ liệu; chi hộ chưa đánh dấu: chờ xác minh
   const w3=world('2026-10-23');w3.T.Order.push(w.T.Order[0]);w3.T.Accrual.push(mk('r',"REVENUE",100,'VND'),mk('cp','COST',50,'VND',false,'PASS_THROUGH'));
   const t3=w3.ctx.orderTotals(w3.T.Accrual)['VND'];eq(t3.passUnverified,1,'chi hộ chưa đánh dấu = chờ xác minh');eq(t3.costNet,50,'chưa xác minh thì chưa loại khỏi chi phí dịch vụ (không tự đoán)');
@@ -225,7 +230,7 @@ suite('H. Xóa / từ chối hóa đơn nháp sau ngày chốt không đổi R09
   // xóa rồi lập lại bằng hóa đơn khác: không cộng hai lần
   w=mkw('2026-10-25');w.T.DebtDoc[0].status='DRAFT';call(w,'docDelete_',full,{id:'d1'});
   call(w,'accrualInvoice_',full,{accrualIds:['a1'],invoiceNo:'HD2',invoiceDate:'2026-10-25',docDate:'2026-10-25'});
-  const x=r09(w,'2026-10-25');eq(x.invRev,1000000);eq(x.unRev,0);eq(x.rev,1000000,'không trùng sau khi lập lại');eq(r09(w,'2026-09-30').invRev,1000000);
+  const x=r09(w,'2026-10-25');eq(x.invRev,1000000);eq(x.unRev,0);eq(x.rev,0,'hóa đơn nháp chưa ghi nhận nên chưa vào doanh thu');eq(x.invRev+x.unRev,1000000,'không trùng sau khi lập lại');eq(r09(w,'2026-09-30').invRev,1000000);
 });
 suite('I. Điều chỉnh khoản chi phí chia nhiều đơn: tổng các phần = điều chỉnh gốc',()=>{
   const cases=[{n:2,w:[500,500],cur:'VND',kind:'INC',amt:1},{n:3,w:[1,1,1],cur:'VND',kind:'INC',amt:1},{n:3,w:[333,333,334],cur:'USD',kind:'DEC',amt:100},{n:5,w:[7,11,13,17,19],cur:'VND',kind:'INC',amt:1001},{n:4,w:[1,1,1,1],cur:'VND',kind:'DEC',amt:3}];
