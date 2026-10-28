@@ -146,7 +146,13 @@ tr.group td{background:var(--bg-soft);font-weight:700}tr.subtotal td{font-weight
   .table-only{display:none}
 }
 @media (min-width:861px){.card-list{display:none}}
-@media print{.side,.top,.bar,.toast,.noprint,.menu-toggle{display:none!important}.layout{display:block}.content{padding:0}body{background:#fff}.report{border:0;padding:0}}
+@page land{size:A4 landscape;margin:10mm}@page port{size:A4 portrait;margin:12mm}
+@media print{.side,.top,.bar,.toast,.noprint,.menu-toggle{display:none!important}.layout{display:block}.content{padding:0}body{background:#fff}.report{border:0;padding:0}
+.content:has(.report) .page-head{display:none!important}
+.report{width:100%;font-size:9pt;-webkit-print-color-adjust:exact;print-color-adjust:exact}.report.land{page:land}.report.port{page:port}
+.report>div[style*="overflow-x"]{overflow:visible!important}
+.report table{width:100%;border-collapse:collapse}.report th,.report td{padding:2px 4px;font-size:8.5pt}
+.report thead{display:table-header-group}.report tr{break-inside:avoid}.report td.r,.report th.r{white-space:nowrap}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 <style id="hak-standard-tokens">
@@ -4363,6 +4369,9 @@ VIEWS.reports = async function (r, main, page) {
     root.appendChild(out);
     var snapSlot = h('div');
     root.appendChild(snapSlot);
+    // Bản in chỉ gồm bản báo cáo: ẩn tiêu đề, ô tham số, danh sách bản chốt...
+    Array.prototype.forEach.call(root.children, function (c) { if (c !== out)
+        c.classList.add('noprint'); });
     page.show(root);
     api('report.snapshots', { code: code }).then(function (sn) {
         if (!page.alive() || !sn.items.length)
@@ -4377,14 +4386,20 @@ function reportCell(c, v, cur) { if (v === undefined || v === null || v === '')
     return ''; if (c.type === 'money')
     return fmtMoney(v, cur); if (c.type === 'date')
     return fmtDate(v); return v; }
+// Dòng nhóm: nhãn là chữ đầu tiên có trong dòng (ở cột nào cũng được), trải suốt chiều ngang — cùng quy tắc với bản xuất PDF/Excel.
+function reportGroupLabel(r, cols) { for (var i = 0; i < cols.length; i++) {
+    var v = r.cells[cols[i].key];
+    if (v !== undefined && v !== null && v !== '')
+        return v;
+} return ''; }
 function renderReport(rep) {
-    var e = rep.meta.entity || {}, wrap = h('div', { class: 'report' });
+    var e = rep.meta.entity || {}, wrap = h('div', { class: 'report ' + (rep.orientation === 'landscape' ? 'land' : 'port') });
     wrap.appendChild(h('div', { style: 'display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap' }, h('div', null, h('b', null, e.name || '(Chưa cấu hình tên doanh nghiệp – Danh mục → Thông tin doanh nghiệp)'), h('div', null, [e.address, e.taxCode ? 'MST: ' + e.taxCode : ''].filter(Boolean).join(' · '))), h('div', { style: 'text-align:right' }, h('div', null, 'Mã mẫu: GML-RPT-' + rep.code.slice(1)), h('div', { class: 'wm' }, 'BẢN NHÁP – CHƯA CHỐT'))));
     wrap.appendChild(h('h2', { style: 'text-align:center;margin:12px 0' }, rep.title + (rep.meta.statementPeriod ? ' – THÁNG ' + rep.meta.statementPeriod.slice(5) + '/' + rep.meta.statementPeriod.slice(0, 4) : '')));
     wrap.appendChild(h('div', { style: 'text-align:center;margin-bottom:8px' }, ['Ngày chốt: ' + fmtDate(rep.meta.asOf), rep.meta.partner ? 'Đối tác: ' + rep.meta.partner : '', rep.meta.order ? 'Đơn hàng: ' + rep.meta.order : '', rep.meta.account ? 'Quỹ: ' + rep.meta.account : '', rep.meta.params && rep.meta.params.from && rep.meta.params.to ? 'Từ ' + fmtDate(rep.meta.params.from) + ' đến ' + fmtDate(rep.meta.params.to) : '', rep.meta.params && rep.meta.params.currency ? 'Tiền tệ: ' + rep.meta.params.currency : '', 'Cập nhật: ' + fmtTime(rep.meta.generatedAt)].filter(Boolean).join(' · ')));
     var thead = h('tr', null, rep.columns.map(function (c) { return h('th', { class: c.align === 'right' ? 'r' : c.align === 'center' ? 'c' : '' }, c.label); }));
-    var tb = rep.rows.map(function (r) { return h('tr', { class: r.t === 'data' ? '' : r.t }, rep.columns.map(function (c, i) { var v = r.cells[c.key]; if (r.t === 'group' && i === 0 && v === undefined)
-        v = ''; return h('td', { class: c.align === 'right' ? 'r' : c.align === 'center' ? 'c' : '', colspan: r.t === 'group' && i === 0 ? rep.columns.length : null, style: r.t === 'group' && i > 0 ? 'display:none' : '' }, reportCell(c, v, r.currency)); })); });
+    var tb = rep.rows.map(function (r) { return h('tr', { class: r.t === 'data' ? '' : r.t }, rep.columns.map(function (c, i) { var v = r.cells[c.key]; if (r.t === 'group' && i === 0)
+        v = reportGroupLabel(r, rep.columns); return h('td', { class: c.align === 'right' ? 'r' : c.align === 'center' ? 'c' : '', colspan: r.t === 'group' && i === 0 ? rep.columns.length : null, style: r.t === 'group' && i > 0 ? 'display:none' : '' }, reportCell(c, v, r.currency)); })); });
     if (!tb.length)
         tb = [h('tr', null, h('td', { colspan: rep.columns.length }, 'Chưa có dữ liệu.'))];
     wrap.appendChild(h('div', { style: 'overflow-x:auto' }, h('table', { class: rep.columns.length >= 10 ? 'dense' : null }, h('thead', null, thead), h('tbody', null, tb))));

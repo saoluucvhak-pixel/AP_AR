@@ -74,8 +74,8 @@ suite('2. Bố cục: khối tiêu đề, gộp ô, hàng tiêu đề đóng bă
   ok(lay.rows[1].cells.some(c=>/GML-RPT-12 · Ngày chốt 25\/10\/2026/.test(c)),'mã mẫu và ngày chốt ở hàng 2');
   ok(/Ngày chốt: 25\/10\/2026/.test(lay.rows[3].cells[0])&&/Cơ sở ngày/.test(lay.rows[3].cells[0]),'điều kiện báo cáo ở thân (trang đầu): '+lay.rows[3].cells[0]);
   const frozenH=lay.rows.slice(0,3).reduce((a,r)=>a+r.height,0);ok(frozenH<=100,'băng lặp cao '+frozenH+'px (trước đây ~170px)');
-  ok(lay.firstData>lay.headerRow+1,'tóm tắt nằm giữa tiêu đề cột và dữ liệu');
-  ok(kinds.includes('summaryHead')&&lay.rows.some(r=>r.kind==='summary'&&/VND/.test(r.cells[0])),'có khối TÓM TẮT theo từng tiền tệ');
+  // Bản xuất phải GIỐNG màn hình: màn hình không có khối TÓM TẮT (lặp lại các dòng tổng) nên bản xuất cũng không có
+  ok(!kinds.includes('summaryHead')&&!kinds.includes('summary'),'không có khối TÓM TẮT: bản xuất giống màn hình');eq(lay.firstData,lay.headerRow+2,'dữ liệu liền sau băng điều kiện, không chen khối nào');
   const data=lay.rows.filter(r=>r.kind==='data'||r.kind==='total');
   data.forEach(r=>{ok(typeof r.cells[2]==='number'&&typeof r.cells[3]==='number','số tiền là số: '+J(r.cells))});
   const usd=lay.rows.find(r=>r.kind==='data'&&r.cells[1]==='USD');eq(usd.cells[2],250,'USD chia 100');ok(/0\.00/.test(usd.fmts[2]),'USD hiển thị 2 số lẻ: '+usd.fmts[2]);
@@ -110,5 +110,12 @@ suite('4. Áp bố cục lên Sheets giả: đủ ô, gộp ô, đóng băng, tr
   eq(calls.find(c=>c[0]==='setFrozenRows')[1],L.frozenRows);eq(calls.filter(c=>c[0]==='setColumnWidth').length>=L.nc,true);
   ok(calls.some(c=>c[0]==='setName'&&c[1]==='R12'),'tên trang là mã báo cáo');ok(sheets.length===2&&sheets[1].n==='Hướng dẫn đọc','có trang Hướng dẫn đọc');
   ok(calls.some(c=>c[0]==='setBackground'&&c[5][0]==='#1f3a5f'),'tiêu đề bảng nền xanh đậm');
+});
+suite('2b. Dòng nhóm trong bản xuất: nhãn lấy từ ô đầu tiên có chữ (ở cột nào cũng được), gộp ô suốt chiều ngang, căn giữa như màn hình',()=>{
+  const w=world('2026-10-25');seed(w);const rep=w.ctx.reportRun_(full,{payload:{code:'R12',params:{asOf:'2026-10-25'}}});
+  const cols=rep.columns,fake=Object.assign({},rep,{rows:[{t:'group',cells:{[cols[cols.length-1].key]:'NHÃN Ở CỘT CUỐI'},currency:''},{t:'group',cells:{[cols[0].key]:'NHÃN Ở CỘT ĐẦU'},currency:''}]});
+  const lay=w.ctx.reportLayout_(fake,'BẢN NHÁP'),g=lay.rows.filter(r=>r.kind==='group');eq(g.length,2);g.forEach(r=>{eq(r.cells.filter(x=>x!=='').length,1,'chỉ một ô có chữ');eq(r.cells[0]!=='',true,'chữ nằm ở ô đầu (ô gộp giữ giá trị ô trái trên)')});
+  eq(g[0].cells[0],'NHÃN Ở CỘT CUỐI');eq(g[1].cells[0],'NHÃN Ở CỘT ĐẦU');
+  g.forEach(r=>{const idx=lay.rows.indexOf(r)+1;ok(lay.merges.some(m=>m[0]===idx&&m[1]===1&&m[2]===1&&m[3]===cols.length),'gộp ô toàn dòng')});
 });
 console.log('Kiểm thử mẫu báo cáo:',steps,'khẳng định (dữ liệu giả, chưa xuất thật từ Google)');

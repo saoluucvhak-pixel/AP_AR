@@ -842,6 +842,21 @@ await suite('46. R36: Tổng hợp công nợ (Khách hàng/NCC) có công tắc
   await pg.locator('[data-cur-btn="USD"]').click();eq(await mode(),'USD');r=await row();ok(/USD/.test(r)&&!/5\.000\.000/.test(r),'chỉ USD: '+r);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('47. Bản in giống màn hình: chỉ in bản báo cáo (ẩn ô tham số, tiêu đề trang), khổ giấy theo mẫu (R03 ngang, R01 dọc), nhãn dòng nhóm hiện ở mọi cột',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});
+  const open=async(code)=>{await go(pg,'#/reports',700);await pg.evaluate(c=>{const s=document.querySelector('select');s.value=c;s.dispatchEvent(new Event('change'))},code);await pg.waitForTimeout(500);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200)};
+  const media=(buf)=>{const m=/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(buf.toString('latin1'));return m?[+m[1],+m[2]]:null};
+  await open('R03');await pg.emulateMedia({media:'print'});
+  const vis=await pg.evaluate(()=>{const d=el=>!el||getComputedStyle(el).display==='none';const card=[...document.querySelectorAll('.card')].find(c=>/Mẫu báo cáo/.test(c.textContent)&&!c.querySelector('.report'));return {form:d(card),head:d(document.querySelector('.page-head')),report:!d(document.querySelector('.report')),land:document.querySelector('.report').classList.contains('land')}});
+  eq(vis,{form:true,head:true,report:true,land:true},'in: ẩn ô tham số và tiêu đề trang, giữ bản báo cáo, mẫu ngang');
+  const pdf3=await pg.pdf({preferCSSPageSize:true,printBackground:true}),m3=media(pdf3);ok(m3&&m3[0]>m3[1],'R03 in khổ ngang: '+JSON.stringify(m3));
+  await pg.emulateMedia({media:'screen'});await open('R01');await pg.emulateMedia({media:'print'});
+  eq(await pg.evaluate(()=>document.querySelector('.report').classList.contains('port')),true);const pdf1=await pg.pdf({preferCSSPageSize:true,printBackground:true}),m1=media(pdf1);ok(m1&&m1[0]<m1[1],'R01 in khổ dọc: '+JSON.stringify(m1));
+  await pg.emulateMedia({media:'screen'});
+  const txt=await pg.evaluate(()=>{const rep={orientation:'landscape',code:'R04',title:'T',meta:{entity:{},asOf:'2026-10-25',params:{}},columns:[{key:'stt',label:'STT',type:'int',align:'center'},{key:'svc',label:'Mã DV',type:'text',align:'left'},{key:'gross',label:'Tiền',type:'money',align:'right'}],rows:[{t:'group',cells:{svc:'Đợt: A (USD)'},currency:'USD'},{t:'data',cells:{stt:1,svc:'FWD',gross:100},currency:'USD'}],notes:[],words:[],issueBlockers:[],signatures:false};return renderReport(rep).innerText});
+  ok(/Đợt: A \(USD\)/.test(txt),'nhãn nhóm đặt ở cột không phải cột đầu vẫn hiện: '+txt.slice(0,200));
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

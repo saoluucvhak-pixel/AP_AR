@@ -3371,19 +3371,6 @@ function rptColWidth_(c, rows) {
         mx = Math.max(mx, Math.min(String(v).length, 60) * 6.4 + 16); });
     return Math.round(Math.max(64, Math.min(300, mx)));
 }
-function rptSummaryLines_(rep) {
-    var cols = rep.columns.filter(function (c) { return c.type === 'money'; }), out = [];
-    rep.rows.forEach(function (r) {
-        if (r.t !== 'total' || !cols.length)
-            return;
-        var dec = (currencyMap_()[r.currency] || { decimals: 0 }).decimals, parts = [];
-        cols.forEach(function (c) { var v = r.cells[c.key]; if (typeof v === 'number' && !/^Lũy kế/.test(c.label))
-            parts.push(c.label + ' ' + formatMinorVn_(v, dec)); });
-        if (parts.length)
-            out.push((r.currency ? r.currency + ' — ' : '') + String(r.cells[rep.columns[0].key] || 'Tổng') + ': ' + parts.slice(0, 5).join(' · '));
-    });
-    return out.slice(0, 6);
-}
 function reportLayout_(rep, label) {
     var cols = rep.columns, nc = cols.length, e = rep.meta.entity || {}, rows = [], merges = [], widths = cols.map(function (c) { return rptColWidth_(c, rep.rows); }), totalW = widths.reduce(function (a, b) { return a + b; }, 0);
     function blank() { var a = []; for (var i = 0; i < nc; i++)
@@ -3451,11 +3438,6 @@ function reportLayout_(rep, label) {
     if (compact) {
         line('band', 'Điều kiện báo cáo: ' + subText, { height: 14 * est(subText, totalW) + 6 });
     }
-    var sum = rptSummaryLines_(rep);
-    if (sum.length) {
-        line('summaryHead', 'TÓM TẮT', { height: 20 });
-        sum.forEach(function (t) { line('summary', t, { height: 18 * est(t, totalW) }); });
-    }
     var dataStart = rows.length + 1;
     var n = 0;
     rep.rows.forEach(function (r) {
@@ -3473,6 +3455,19 @@ function reportLayout_(rep, label) {
         var fm = cols.map(function (c) { return c.type === 'money' ? (dec === 0 ? '#,##0;[Red]-#,##0;0' : '#,##0.00;[Red]-#,##0.00;0.00') : (c.type === 'int' ? '#,##0' : (c.type === 'date' ? 'dd/MM/yyyy' : '@')); });
         if (r.t === 'data')
             n++;
+        if (r.t === 'group') {
+
+            var lbl = '';
+            cells.some(function (x) { if (x !== '' && x !== null && x !== undefined) {
+                lbl = x;
+                return true;
+            } return false; });
+            cells = blank();
+            cells[0] = lbl;
+            rows.push({ kind: 'group', cells: cells, fmts: cols.map(function () { return '@'; }), zebra: false, height: 22 });
+            merges.push([rows.length, 1, 1, nc]);
+            return;
+        }
         rows.push({ kind: r.t, cells: cells, fmts: fm, zebra: r.t === 'data' && n % 2 === 0, height: 0 });
     });
     var firstData = dataStart, lastData = dataStart + rep.rows.length - 1;
@@ -3561,15 +3556,11 @@ function buildReportSheet_(rep, label) {
             rg.setHorizontalAlignment('center').setFontColor('#374151').setFontSize(10).setWrap(true);
         else if (k === 'status')
             rg.setHorizontalAlignment('center').setFontColor(R.danger).setFontWeight('bold').setFontSize(9);
-        else if (k === 'summaryHead')
-            rg.setFontWeight('bold').setBackground(R.group).setFontColor(R.brand);
-        else if (k === 'summary')
-            rg.setBackground('#fafbfd').setWrap(true).setFontSize(10);
         else if (k === 'header') {
             rg.setBackground(R.headFill).setFontColor(R.headInk).setFontWeight('bold').setWrap(true).setHorizontalAlignment('center');
         }
         else if (k === 'group')
-            rg.setBackground(R.group).setFontWeight('bold');
+            rg.setBackground(R.group).setFontWeight('bold').setHorizontalAlignment('center');
         else if (k === 'subtotal')
             rg.setBackground(R.subtotal).setFontWeight('bold');
         else if (k === 'total')
