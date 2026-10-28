@@ -22,19 +22,20 @@ function setup(dir,payAmt,allocAmt,docAmt){
   return w;
 }
 const rows=(w,fn,code)=>[...w.ctx[fn](full,code,{asOf:'2026-10-23'}).rows].map(r=>({t:r.t,...r.cells}));
-suite('1. R02: thu 500, phân bổ 400 → dòng chứng từ giữ 400; cuối đối tác có dòng ứng trước 100 và số "đã thu gồm ứng trước" 500, còn phải thu 500',()=>{
+suite('1. R02: thu 500, phân bổ 400 → dòng chứng từ giữ 400; MỘT dòng "đã thu gồm ứng trước 100" ghi rõ số ứng trước: đã thu 500, còn phải thu 500; nhãn nhóm hiện được',()=>{
   const r=rows(setup('AR',500,400,1000),'rep02_','R02'),doc=r.find(x=>x.t==='data'&&x.docNo==='D1');eq([doc.gross,doc.settled,doc.out],[1000,400,600],'theo chứng từ vẫn 400');
-  const sub=r.filter(x=>x.t==='subtotal');eq([sub[0].desc,sub[0].settled,sub[0].out],['Cộng ABC',400,600]);const adv=r.find(x=>x.t==='data'&&/ứng trước/.test(x.desc||''));eq([adv.settled,adv.out],[100,-100]);
-  eq([sub[1].desc,sub[1].gross,sub[1].settled,sub[1].out],['Cộng ABC – đã thu gồm ứng trước',1000,500,500],'theo khách hàng: 500');
-  const tot=r.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].settled,tot[0].out],['TỔNG CỘNG',400,600]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG CỘNG – đã thu gồm ứng trước',500,500]);
+  ok(r.some(x=>x.t==='group'&&x.stt==='ABC – VND'),'dòng nhóm ghi đối tác và tiền tệ ở cột đầu (giao diện chỉ hiện cột đầu)');
+  const sub=r.filter(x=>x.t==='subtotal');eq([sub[0].desc,sub[0].settled,sub[0].out],['Cộng ABC',400,600]);ok(!r.some(x=>x.t==='data'&&/ứng trước/.test(x.desc||'')),'không còn dòng ứng trước riêng');
+  eq([sub[1].desc,sub[1].gross,sub[1].settled,sub[1].out],['Cộng ABC – đã thu gồm ứng trước 100 VND',1000,500,500],'theo khách hàng: 500');
+  const tot=r.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].settled,tot[0].out],['TỔNG CỘNG VND',400,600]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG CỘNG – đã thu gồm ứng trước 100 VND',500,500]);
 });
-suite('2. R03 (phải trả): chi 500, phân bổ 400 → "đã trả gồm ứng trước" 500, còn phải trả 500',()=>{
-  const r=rows(setup('AP',500,400,1000),'rep02_','R03'),sub=r.filter(x=>x.t==='subtotal');eq([sub[1].desc,sub[1].settled,sub[1].out],['Cộng ABC – đã trả gồm ứng trước',500,500]);ok(r.some(x=>/trả trước/.test(x.desc||'')),'dòng trả trước');
+suite('2. R03 (phải trả): chi 500, phân bổ 400 → "đã trả gồm trả trước 100": đã trả 500, còn phải trả 500',()=>{
+  const r=rows(setup('AP',500,400,1000),'rep02_','R03'),sub=r.filter(x=>x.t==='subtotal');eq([sub[1].desc,sub[1].settled,sub[1].out],['Cộng ABC – đã trả gồm trả trước 100 VND',500,500]);ok(r.some(x=>x.t==='group'&&x.stt==='ABC – VND'));
 });
 suite('3. Không có tiền chưa phân bổ (phân bổ đủ) hoặc phiếu khác chiều → không thêm dòng nào',()=>{
-  const a=rows(setup('AR',400,400,1000),'rep02_','R02');ok(!a.some(x=>/ứng trước/.test(x.desc||'')),'phân bổ đủ: không có dòng ứng trước');eq(a.filter(x=>x.t==='subtotal').length,1);eq(a.filter(x=>x.t==='total').length,1);
+  const a=rows(setup('AR',400,400,1000),'rep02_','R02');ok(!a.some(x=>/ứng trước|trả trước/.test(x.desc||'')),'phân bổ đủ: không có dòng ứng trước');eq(a.filter(x=>x.t==='subtotal').length,1);eq(a.filter(x=>x.t==='total').length,1);
   const w=setup('AR',400,400,1000);w.T.Payment.push({id:'pay2',payNo:'P2',direction:'OUT',partnerId:'p1',currency:'VND',amountMinor:300,effectiveDate:'2026-10-03',method:'BANK',cashAccountCode:'Q1',status:'POSTED',version:1});
-  ok(!rows(w,'rep02_','R02').some(x=>/ứng trước/.test(x.desc||'')),'phiếu chi chưa phân bổ không tính vào công nợ phải thu');
+  ok(!rows(w,'rep02_','R02').some(x=>/ứng trước|trả trước/.test(x.desc||'')),'phiếu chi chưa phân bổ không tính vào công nợ phải thu');
 });
 suite('4. Tổng hợp công nợ theo đối tác: net = còn nợ theo chứng từ − tiền chưa phân bổ (có thể âm)',()=>{
   const items=w=>{w.ctx.rmServe_=()=>({value:w.ctx.rmBuild_('PARTNERS','2026-10-23')});w.ctx.rmMeta_=()=>({});return w.ctx.summaryPartners_(full,{payload:{}}).items.find(x=>x.partnerId==='p1')};

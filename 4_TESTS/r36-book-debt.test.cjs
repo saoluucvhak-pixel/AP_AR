@@ -53,7 +53,7 @@ suite('5. R01: khối "Quy đổi VND" (tổng, đã thu, còn lại), ứng tr�
 });
 suite('6. R02: khối "Quy đổi VND" theo đối tác (gồm mọi tiền tệ), dòng tổng, ứng trước và "gồm ứng trước"; R03 tương tự cho phải trả',()=>{
   const w=world(),R=rows(w.ctx.rep02_(full,'R02',{asOf:ASOF})),g=R.findIndex(x=>x.t==='group'&&/^Quy đổi VND/.test(x.stt||''));ok(g>0);const sec=R.slice(g),row=sec.find(x=>x.t==='data'&&x.desc==='ABC');eq([row.gross,row.settled,row.out],[25300+5000000+5040,10120,EXP.ARout]);
-  const tot=sec.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].out],['TỔNG QUY ĐỔI VND',EXP.ARout]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG QUY ĐỔI VND – đã thu gồm ứng trước',10120+EXP.ADV,EXP.ARout-EXP.ADV]);
+  const tot=sec.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].out],['TỔNG QUY ĐỔI VND',EXP.ARout]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG QUY ĐỔI VND – đã thu gồm ứng trước 2.530 VND',10120+EXP.ADV,EXP.ARout-EXP.ADV]);ok(!sec.some(x=>x.t==='data'&&/ứng trước/.test(x.desc||'')),'một dòng ứng trước, không lặp');eq(sec.filter(x=>x.t==='data').map(x=>x.stt),[1],'đánh số lại từ 1 trong khối quy đổi');
   const ap=rows(w.ctx.rep02_(full,'R03',{asOf:ASOF})),ga=ap.findIndex(x=>x.t==='group'&&/^Quy đổi VND/.test(x.stt||''));ok(ga>0);eq(ap.slice(ga).find(x=>x.t==='total').out,EXP.APout);
 });
 suite('7. R07: khối "Quy đổi VND" theo nhóm tuổi nợ: tổng các nhóm = tổng; khớp lõi',()=>{
@@ -65,5 +65,22 @@ suite('8. Cùng một con số ở mọi nơi: lõi = Tổng quan = Tổng hợp
   const vals=[c.dashboardSummaryLive_(full,{payload:{asOf:ASOF}}).bookTotals.AR.out,c.summaryPartners_(full,{payload:{}}).book.AR.out,
     rows(c.rep01_(full,'R01',{asOf:ASOF})).find(x=>x.label==='TỔNG PHẢI THU QUY ĐỔI VND').out,rows(c.rep02_(full,'R02',{asOf:ASOF})).find(x=>x.desc==='TỔNG QUY ĐỔI VND').out,rows(c.rep07_(full,'R07',{asOf:ASOF})).find(x=>/PHẢI THU QUY ĐỔI/.test(x.partner||'')&&x.t==='total').total];
   vals.forEach(v=>eq(v,core));
+});
+suite('9. R14/bút toán đánh giá lại: cảnh báo tỷ giá cuối kỳ cũ (>7 ngày); R13 không còn nói "chưa tự ghi bút toán"',()=>{
+  const w=world(),c=w.ctx,fresh=c.fxRevalLines_(full,'2026-10-05',{}),old=c.fxRevalLines_(full,ASOF,{});
+  eq([...fresh.stale],[],'tỷ giá 01/10, chốt 05/10: chưa cũ');ok(old.stale.length===1&&/USD \(2026-10-01\)/.test(old.stale[0]),'chốt 23/10 dùng tỷ giá 01/10: '+old.stale.join('|'));
+  const r14=c.rep14_(full,'R14',{asOf:ASOF});ok(r14.notes.some(n=>/đã cũ/.test(n)),'R14 cảnh báo');ok(r14.notes.some(n=>/ứng trước.*không đánh giá lại/.test(n)),'R14 nêu rõ ứng trước không đánh giá lại');
+  ok(!c.rep13_(full,'R13',{asOf:ASOF}).notes.some(n=>/chưa tự ghi bút toán/.test(n)),'R13 ghi chú đã cập nhật');
+});
+suite('10. Tỷ giá mua/bán: phải thu đánh giá lại theo MUA, phải trả theo BÁN; thiếu thì dùng tỷ giá chung và cảnh báo; R14 tách phần đã/chưa quy đổi',()=>{
+  const w=world(),c=w.ctx,fx=w.T.FxRate.find(r=>r.currency==='USD'&&r.rateE4===252000);ok(fx,'có tỷ giá 252.000 ngày 01/10');
+  let rv=c.fxRevalLines_(full,ASOF,{}),ar=rv.items.find(a=>a.dir==='AR'),ap=rv.items.find(a=>a.dir==='AP');
+  eq([ar.basis,ap.basis,ar.rateE4,ap.rateE4],['MID','MID',252000,252000],'chưa nhập mua/bán: tỷ giá chung');eq([...rv.midFallback],[],'chưa dùng mua/bán thì không cảnh báo');
+  eq([ar.out,ar.conv,ar.unconv],[110000,80000,30000],'R14: tổng = đã quy đổi + chưa quy đổi');
+  fx.buyE4=251500;fx.sellE4=252600;rv=c.fxRevalLines_(full,ASOF,{});ar=rv.items.find(a=>a.dir==='AR');ap=rv.items.find(a=>a.dir==='AP');
+  eq([ar.basis,ar.rateE4,ap.basis,ap.rateE4],['BUY',251500,'SELL',252600]);eq(ar.now,c.fxToBase_(80000,2,251500),'phải thu × tỷ giá mua');eq(ap.now,c.fxToBase_(50000,2,252600),'phải trả × tỷ giá bán');
+  eq([...c.fxRevalLines_(full,ASOF,{}).midFallback],[]);
+  fx.sellE4=0;rv=c.fxRevalLines_(full,ASOF,{});ok(rv.midFallback.some(x=>/phải trả USD/.test(x)),'có mua, thiếu bán → cảnh báo phải trả');eq(rv.items.find(a=>a.dir==='AP').basis,'MID');fx.sellE4=252600;
+  const r14=c.rep14_(full,'R14',{asOf:ASOF}),R=rows(r14),a=R.find(x=>x.dir==='Phải thu');ok(/\(mua\)/.test(a.rate)&&/\(bán\)/.test(R.find(x=>x.dir==='Phải trả').rate),'cột tỷ giá ghi mua/bán: '+a.rate);ok(/300/.test(a.unconv),'cột chưa quy đổi: '+a.unconv);
 });
 console.log('Tổng kiểm tra:',steps);

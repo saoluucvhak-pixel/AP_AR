@@ -52,7 +52,7 @@ var TABLES_ = {
 };
 var NOSYS_ = { SysTx: 1, AuditLog: 1 };
 
-var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s', 'unitPrice:n'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s', 'unitPrice:n'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i', 'allocPlanJson:s'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
+var EXTRA_COLS_ = { Partner: ['address:s', 'phone:s', 'contactName:s', 'contactTitle:s', 'bankAccountNo:s', 'bankName:s'], Order: ['serviceCode:s', 'hsdvNo:s', 'servicesJson:s', 'cancelledDate:s', 'archivedAt:s', 'archivedBy:s', 'archiveNote:s'], Accrual: ['serviceCode:s', 'cancelledDate:s', 'unitPrice:n'], FxRate: ['buyE4:i', 'sellE4:i'], PassLink: ['costRateE4:i', 'revRateE4:i', 'fxDiffBaseMinor:i'], DebtLine: ['serviceCode:s', 'unitPrice:n'], Payment: ['fxRateE4:i', 'fxSource:s', 'amountBaseMinor:i', 'allocPlanJson:s'], DebtDoc: ['fxRateE4:i', 'fxSource:s', 'totalBaseMinor:i'], Allocation: ['fxPayRateE4:i', 'fxDocRateE4:i', 'fxDiffBaseMinor:i'], CashCount: ['adjustStatus:s', 'adjustKind:s', 'adjustNote:s', 'adjustedBy:s', 'adjustedAt:s', 'adjustRateE4:i'] };
 var ID_PREFIX_ = { Partner: 'par', ServiceFile: 'sf', ShipmentRef: 'shr', DebtDoc: 'doc', DebtLine: 'dln', Payment: 'pay', Allocation: 'alc',
     OpeningBalance: 'opb', AppUser: 'usr', Catalog: 'cat', ImportBatch: 'bat', ImportRow: 'imr', BackupCatalog: 'bkp',
     ReportSnapshot: 'rpt', ReadModel: 'rdm', Order: 'odr', Accrual: 'acr', AccrualSplit: 'acs', Followup: 'flu', FxRate: 'fxr', FxEntry: 'fxe', PassLink: 'pls', CashTransfer: 'cxf', CashExchange: 'cex', BankRecon: 'brc', CashCount: 'ckk', SysTx: 'tx', AuditLog: 'aud' };
@@ -3371,19 +3371,6 @@ function rptColWidth_(c, rows) {
         mx = Math.max(mx, Math.min(String(v).length, 60) * 6.4 + 16); });
     return Math.round(Math.max(64, Math.min(300, mx)));
 }
-function rptSummaryLines_(rep) {
-    var cols = rep.columns.filter(function (c) { return c.type === 'money'; }), out = [];
-    rep.rows.forEach(function (r) {
-        if (r.t !== 'total' || !cols.length)
-            return;
-        var dec = (currencyMap_()[r.currency] || { decimals: 0 }).decimals, parts = [];
-        cols.forEach(function (c) { var v = r.cells[c.key]; if (typeof v === 'number' && !/^Lũy kế/.test(c.label))
-            parts.push(c.label + ' ' + formatMinorVn_(v, dec)); });
-        if (parts.length)
-            out.push((r.currency ? r.currency + ' — ' : '') + String(r.cells[rep.columns[0].key] || 'Tổng') + ': ' + parts.slice(0, 5).join(' · '));
-    });
-    return out.slice(0, 6);
-}
 function reportLayout_(rep, label) {
     var cols = rep.columns, nc = cols.length, e = rep.meta.entity || {}, rows = [], merges = [], widths = cols.map(function (c) { return rptColWidth_(c, rep.rows); }), totalW = widths.reduce(function (a, b) { return a + b; }, 0);
     function blank() { var a = []; for (var i = 0; i < nc; i++)
@@ -3451,11 +3438,6 @@ function reportLayout_(rep, label) {
     if (compact) {
         line('band', 'Điều kiện báo cáo: ' + subText, { height: 14 * est(subText, totalW) + 6 });
     }
-    var sum = rptSummaryLines_(rep);
-    if (sum.length) {
-        line('summaryHead', 'TÓM TẮT', { height: 20 });
-        sum.forEach(function (t) { line('summary', t, { height: 18 * est(t, totalW) }); });
-    }
     var dataStart = rows.length + 1;
     var n = 0;
     rep.rows.forEach(function (r) {
@@ -3473,6 +3455,19 @@ function reportLayout_(rep, label) {
         var fm = cols.map(function (c) { return c.type === 'money' ? (dec === 0 ? '#,##0;[Red]-#,##0;0' : '#,##0.00;[Red]-#,##0.00;0.00') : (c.type === 'int' ? '#,##0' : (c.type === 'date' ? 'dd/MM/yyyy' : '@')); });
         if (r.t === 'data')
             n++;
+        if (r.t === 'group') {
+
+            var lbl = '';
+            cells.some(function (x) { if (x !== '' && x !== null && x !== undefined) {
+                lbl = x;
+                return true;
+            } return false; });
+            cells = blank();
+            cells[0] = lbl;
+            rows.push({ kind: 'group', cells: cells, fmts: cols.map(function () { return '@'; }), zebra: false, height: 22 });
+            merges.push([rows.length, 1, 1, nc]);
+            return;
+        }
         rows.push({ kind: r.t, cells: cells, fmts: fm, zebra: r.t === 'data' && n % 2 === 0, height: 0 });
     });
     var firstData = dataStart, lastData = dataStart + rep.rows.length - 1;
@@ -3561,15 +3556,11 @@ function buildReportSheet_(rep, label) {
             rg.setHorizontalAlignment('center').setFontColor('#374151').setFontSize(10).setWrap(true);
         else if (k === 'status')
             rg.setHorizontalAlignment('center').setFontColor(R.danger).setFontWeight('bold').setFontSize(9);
-        else if (k === 'summaryHead')
-            rg.setFontWeight('bold').setBackground(R.group).setFontColor(R.brand);
-        else if (k === 'summary')
-            rg.setBackground('#fafbfd').setWrap(true).setFontSize(10);
         else if (k === 'header') {
             rg.setBackground(R.headFill).setFontColor(R.headInk).setFontWeight('bold').setWrap(true).setHorizontalAlignment('center');
         }
         else if (k === 'group')
-            rg.setBackground(R.group).setFontWeight('bold');
+            rg.setBackground(R.group).setFontWeight('bold').setHorizontalAlignment('center');
         else if (k === 'subtotal')
             rg.setBackground(R.subtotal).setFontWeight('bold');
         else if (k === 'total')
@@ -6112,6 +6103,23 @@ function fxNearest_(cur, date, rows) {
     return best;
 }
 
+function fxSide_(row, side) {
+    var v = side === 'BUY' ? row.buyE4 : side === 'SELL' ? row.sellE4 : 0;
+
+    if (!(v > 0) && row.source === 'GOOGLE' && side !== 'MID' && row.rateE4 > 0)
+        v = row.rateE4;
+    return v > 0 ? { e4: v, basis: side } : { e4: row.rateE4, basis: 'MID' };
+}
+function fxClosing_(cur, date, rows, side) {
+    var n = fxNearest_(cur, date, rows);
+    if (!n)
+        return null;
+    var sd = fxSide_(n, side);
+    return { e4: sd.e4, basis: sd.basis, rateDate: n.rateDate };
+}
+
+function fxUsesSides_(cur, rows) { return (rows || []).some(function (r) { return r.currency === cur && (r.buyE4 > 0 || r.sellE4 > 0); }); }
+
 function fxPickGoogle_(values, date) {
     var best = null;
     (values || []).forEach(function (row) {
@@ -6160,9 +6168,9 @@ function fxStore_(user, cur, date, e4, source, note) {
     return runTx_(user, { requestId: uid_('fx'), action: 'fx.store', payload: { cur: cur, date: date, e4: e4, source: source } }, function (tx) {
         var rows = tx.rows('FxRate'), same = rows.filter(function (r) { return r.currency === cur && r.rateDate === date && r.source === source && r.isDeleted !== 1; })[0], row;
         if (same)
-            row = tx.update('FxRate', same.id, { rateE4: e4, note: note || same.note });
+            row = tx.update('FxRate', same.id, { rateE4: e4, buyE4: e4, sellE4: e4, note: note || same.note });
         else
-            row = tx.insert('FxRate', { rateDate: date, currency: cur, rateE4: e4, source: source, note: note || '' });
+            row = tx.insert('FxRate', { rateDate: date, currency: cur, rateE4: e4, buyE4: e4, sellE4: e4, source: source, note: note || '' });
         return { result: { id: row.id }, audit: [{ entityType: 'FxRate', entityId: row.id, action: 'fx.' + source.toLowerCase(), diff: { currency: cur, date: date, rate: fxText_(e4) } }] };
     });
 }
@@ -6193,7 +6201,7 @@ function fxList_(user, req) {
     var p = req.payload || {}, rows = repoValid_('FxRate').filter(function (r) { return (!p.currency || r.currency === p.currency) && (!p.from || r.rateDate >= p.from) && (!p.to || r.rateDate <= p.to); });
     rows.sort(function (a, b) { return a.rateDate < b.rateDate ? 1 : a.rateDate > b.rateDate ? -1 : (a.source < b.source ? -1 : 1); });
     var total = rows.length, size = Math.min(Math.max(Number(p.pageSize) || 100, 1), 500), page = Math.max(Number(p.page) || 1, 1);
-    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
+    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, buy: fxText_(fxSide_(r, 'BUY').basis === 'BUY' ? fxSide_(r, 'BUY').e4 : 0), sell: fxText_(fxSide_(r, 'SELL').basis === 'SELL' ? fxSide_(r, 'SELL').e4 : 0), source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
 }
 function fxSave_(user, req) {
     requirePerm_(user, 'fx.write');
@@ -6202,18 +6210,24 @@ function fxSave_(user, req) {
         errs.push({ path: 'currency', code: 'REQUIRED', message: 'Chọn ngoại tệ (không phải ' + BASE_CUR_ + ').' });
     if (!isDate_(p.rateDate) || p.rateDate > addDays_(todayVn_(), 1))
         errs.push({ path: 'rateDate', code: 'DATE_INVALID', message: 'Nhập ngày hợp lệ, không ở tương lai.' });
-    var e4 = fxE4_(p.rate);
+    var e4 = fxE4_(p.rate), buy4 = 0, sell4 = 0;
     if (!e4)
         errs.push({ path: 'rate', code: 'FX_INVALID', message: 'Nhập tỷ giá dạng số dương, tối đa 4 số lẻ.' });
+    if (p.buy !== undefined && p.buy !== null && String(p.buy).trim() !== '' && !(buy4 = fxE4_(p.buy)))
+        errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua: số dương, tối đa 4 số lẻ (hoặc để trống).' });
+    if (p.sell !== undefined && p.sell !== null && String(p.sell).trim() !== '' && !(sell4 = fxE4_(p.sell)))
+        errs.push({ path: 'sell', code: 'FX_INVALID', message: 'Tỷ giá bán: số dương, tối đa 4 số lẻ (hoặc để trống).' });
+    if (buy4 && sell4 && buy4 > sell4)
+        errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua không được lớn hơn tỷ giá bán.' });
     if (errs.length)
         throw err_('VALIDATION_FAILED', 'Dữ liệu chưa hợp lệ', errs);
     return runTx_(user, { requestId: req.requestId, action: 'fx.save', payload: p, failAt: req.failAt }, function (tx) {
         var same = tx.rows('FxRate').filter(function (r) { return r.currency === p.currency && r.rateDate === p.rateDate && r.source === 'MANUAL' && r.isDeleted !== 1; })[0], row;
         if (same)
-            row = tx.update('FxRate', same.id, { rateE4: e4, note: maxStr_(p.note, 200) }, p.ifVersion);
+            row = tx.update('FxRate', same.id, { rateE4: e4, buyE4: buy4, sellE4: sell4, note: maxStr_(p.note, 200) }, p.ifVersion);
         else
-            row = tx.insert('FxRate', { rateDate: p.rateDate, currency: p.currency, rateE4: e4, source: 'MANUAL', note: maxStr_(p.note, 200) });
-        return { result: { id: row.id, rate: fxText_(e4), replaced: !!same }, audit: [{ entityType: 'FxRate', entityId: row.id, action: same ? 'fx.update' : 'fx.create', diff: { currency: p.currency, date: p.rateDate, rate: fxText_(e4), before: same ? fxText_(same.rateE4) : null } }] };
+            row = tx.insert('FxRate', { rateDate: p.rateDate, currency: p.currency, rateE4: e4, buyE4: buy4, sellE4: sell4, source: 'MANUAL', note: maxStr_(p.note, 200) });
+        return { result: { id: row.id, rate: fxText_(e4), replaced: !!same }, audit: [{ entityType: 'FxRate', entityId: row.id, action: same ? 'fx.update' : 'fx.create', diff: { currency: p.currency, date: p.rateDate, rate: fxText_(e4), buy: buy4 ? fxText_(buy4) : '', sell: sell4 ? fxText_(sell4) : '', before: same ? fxText_(same.rateE4) : null } }] };
     });
 }
 
@@ -6381,6 +6395,7 @@ function bookDebtTotals_(led, filter) {
     res.net = res.AR.net - res.AP.net;
     return res;
 }
+var FX_BASIS_VN_ = { BUY: '(mua)', SELL: '(bán)', MID: '(chung)', '': '' };
 function fxRevalLines_(user, asOf, filter) {
     filter = filter || {};
     var led = loadLedger_(user, asOf), rates = repoValid_('FxRate'), agg = {}, miss = 0, noRate = {};
@@ -6389,7 +6404,7 @@ function fxRevalLines_(user, asOf, filter) {
         if (!b || b.out === 0 || !d || d.currency === BASE_CUR_ || (filter.currency && d.currency !== filter.currency) || (filter.group && d.businessGroupCode !== filter.group))
             return;
         var k = d.direction + '|' + d.currency, a = agg[k] = agg[k] || { dir: d.direction, cur: d.currency, out: 0, orig: 0, now: 0, conv: 0 }, dec = (currencyMap_()[d.currency] || { decimals: 0 }).decimals;
-        var dr = d.fxRateE4 > 0 ? d.fxRateE4 : ((fxFind_(d.currency, d.docDate, rates) || {}).rateE4 || 0), cr = (fxNearest_(d.currency, asOf, rates) || {}).rateE4 || 0;
+        var dr = d.fxRateE4 > 0 ? d.fxRateE4 : ((fxFind_(d.currency, d.docDate, rates) || {}).rateE4 || 0), cr = (fxClosing_(d.currency, asOf, rates, d.direction === 'AR' ? 'BUY' : 'SELL') || {}).e4 || 0;
         a.out += b.out;
         if (!cr)
             noRate[d.currency] = 1;
@@ -6401,14 +6416,21 @@ function fxRevalLines_(user, asOf, filter) {
         a.orig += fxToBase_(b.out, dec, dr);
         a.now += fxToBase_(b.out, dec, cr);
     });
+    var midFb = [];
     var items = Object.keys(agg).sort().map(function (k) {
-        var a = agg[k], n = fxNearest_(a.cur, asOf, rates);
-        a.rateE4 = n ? n.rateE4 : 0;
+        var a = agg[k], n = fxClosing_(a.cur, asOf, rates, a.dir === 'AR' ? 'BUY' : 'SELL');
+        a.rateE4 = n ? n.e4 : 0;
         a.rateDate = n ? n.rateDate : '';
+        a.basis = n ? n.basis : '';
+        a.unconv = a.out - a.conv;
+        if (n && n.basis === 'MID' && fxUsesSides_(a.cur, rates))
+            midFb.push((a.dir === 'AR' ? 'phải thu ' : 'phải trả ') + a.cur);
         a.diff = (a.dir === 'AR' ? 1 : -1) * (a.now - a.orig);
         return a;
     });
-    return { items: items, missing: miss, noRate: Object.keys(noRate) };
+
+    var stale = items.filter(function (a) { return a.rateDate && daysBetween_(a.rateDate, asOf) > 7; }).map(function (a) { return a.cur + ' (' + a.rateDate + ')'; }).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+    return { items: items, missing: miss, noRate: Object.keys(noRate), stale: stale, midFallback: midFb };
 }
 
 function fxOutMethod_() { return cfgGet_('fx.outMethod', 'MOVING_AVG') === 'DAY' ? 'DAY' : 'MOVING_AVG'; }
@@ -6600,7 +6622,7 @@ function fxPoolReport_(user, req) {
     fxEntryGate_(user, 'fx.entry.read');
     var p = req.payload || {}, asOf = isDate_(p.asOf) ? p.asOf : todayVn_(), run = fxPoolRun_(null, asOf), rates = repoValid_('FxRate'), maOn = fxOutMethod_() === 'MOVING_AVG', pays = byId_(repoValid_('Payment')), xfers = byId_(xferRows_()), exs = byId_(exchRows_()), items = [];
     Object.keys(run.accounts).sort().forEach(function (code) {
-        var a = run.accounts[code], n = fxNearest_(a.currency, asOf, rates), mism = [];
+        var a = run.accounts[code], n0 = fxClosing_(a.currency, asOf, rates, 'BUY'), n = n0 && { rateE4: n0.e4, rateDate: n0.rateDate }, mism = [];
         a.events.forEach(function (e) {
             if (e.direction === 'XIN' || e.direction === 'EBUY')
                 return;
@@ -7530,7 +7552,7 @@ function fxPeriodItems_(periodId) {
         if (!a.conv && a.out)
             return;
         if (a.diff !== 0)
-            items.push({ entryType: 'UNREALIZED', currency: a.cur, direction: a.dir, foreignMinor: a.out, rateE4: a.rateE4, amountBaseMinor: a.diff, asOf: to, reversesId: '', note: FX_TYPE_VN_.UNREALIZED + ' ' + a.cur + ' ' + (a.dir === 'AR' ? 'phải thu' : 'phải trả') + ' tại ' + rptDateVn_(to) + ' theo tỷ giá ' + fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' });
+            items.push({ entryType: 'UNREALIZED', currency: a.cur, direction: a.dir, foreignMinor: a.conv, rateE4: a.rateE4, amountBaseMinor: a.diff, asOf: to, reversesId: '', note: FX_TYPE_VN_.UNREALIZED + ' ' + a.cur + ' ' + (a.dir === 'AR' ? 'phải thu' : 'phải trả') + ' tại ' + rptDateVn_(to) + ' theo tỷ giá ' + fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' });
     });
 
     var cashPool = fxPoolRun_(null, to), cashAgg = {}, allRates = repoValid_('FxRate');
@@ -7547,7 +7569,9 @@ function fxPeriodItems_(periodId) {
         k.B += a.balB;
     });
     Object.keys(cashAgg).sort().forEach(function (c) {
-        var k = cashAgg[c], n = fxNearest_(c, to, allRates);
+        var k = cashAgg[c], n0 = fxClosing_(c, to, allRates, 'BUY'), n = n0 && { rateE4: n0.e4, rateDate: n0.rateDate };
+        if (n0 && n0.basis === 'MID' && fxUsesSides_(c, allRates))
+            warnings.push('Chưa nhập tỷ giá mua ở ngày chốt cho quỹ ' + c + ': dùng tỷ giá chung.');
         if (!n) {
             warnings.push('Chưa có tỷ giá ' + c + ' nào không sau ' + rptDateVn_(to) + ' nên chưa đánh giá lại quỹ.');
             return;
@@ -7559,6 +7583,8 @@ function fxPeriodItems_(periodId) {
     if (rv.missing)
         warnings.push(rv.missing + ' dòng công nợ ngoại tệ thiếu tỷ giá nên chưa đánh giá lại.');
     rv.noRate.forEach(function (c) { warnings.push('Chưa có tỷ giá ' + c + ' nào không sau ' + rptDateVn_(to) + '.'); });
+    rv.midFallback.forEach(function (c) { warnings.push('Chưa nhập tỷ giá ' + (c.indexOf('phải thu') === 0 ? 'mua' : 'bán') + ' ở ngày chốt cho ' + c + ': dùng tỷ giá chung.'); });
+    rv.stale.forEach(function (c) { warnings.push('Tỷ giá cuối kỳ của ' + c + ' đã cũ (hơn 7 ngày trước ' + rptDateVn_(to) + '): nên nhập tỷ giá đúng ngày chốt rồi lập lại bút toán.'); });
     if (posted.length)
         warnings.push('Kỳ này đã có bút toán ghi nhận: chỉ thêm phần chênh lệch phát sinh thêm của "đã thực hiện"; đánh giá lại cuối kỳ cần đảo bút toán cũ trước nếu muốn tính lại.');
     items = items.filter(function (it) { return !(it.entryType === 'UNREALIZED' && posted.some(function (e) { return e.entryType === 'UNREALIZED' && e.currency === it.currency && e.direction === it.direction; })); });
@@ -8534,20 +8560,39 @@ function rep02_(user, code, params) {
     var rep = newReport_(code, params, [col_('stt', 'STT', 'int', 'center'), col_('docNo', 'Số CT'), col_('docDate', 'Ngày CT', 'date'), col_('invoiceNo', 'Số HĐ'), col_('svc', 'Mã dịch vụ'),
         col_('desc', 'Nội dung'), col_('gross', dir === 'AR' ? 'Phải thu' : 'Phải trả', 'money'), col_('settled', dir === 'AR' ? 'Đã thu' : 'Đã trả', 'money'), col_('out', dir === 'AR' ? 'Còn phải thu' : 'Còn phải trả', 'money'),
         col_('dueDate', 'Đến hạn', 'date'), col_('status', 'Tình trạng (tính)'), col_('note', 'Ghi chú (người nhập)')]);
+
+    var qOrd = normText_(params.q || ''), ordFilter = !!(params.orderId || qOrd), ox = null, octx = null;
+    if (ordFilter) {
+        octx = orderLinkCtx_(user);
+        ox = docOrderIndex_(user, led.lines, octx);
+    }
+    function orderMatch(d) {
+        var e = ox[d.id];
+        if (!e)
+            return false;
+        if (params.orderId)
+            return e.orders.some(function (o) { return o.id === params.orderId; });
+        return e.orders.some(function (o) { return normText_(o.orderNo + ' ' + o.poNo).indexOf(qOrd) >= 0; }) || e.poRefs.some(function (r) { return normText_(r).indexOf(qOrd) >= 0; });
+    }
     var docs = led.docs.filter(function (d) {
-        return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
+        return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!ordFilter || orderMatch(d)) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
+    rep.meta.partner = params.partnerId ? partnerName_(led.pm, params.partnerId) : 'Tất cả đối tác';
+    if (ordFilter) {
+        var fo2 = params.orderId ? octx.orders[params.orderId] : null;
+        rep.meta.order = params.orderId ? (fo2 && orderInScope_(user, fo2, octx.pm) ? fo2.orderNo + (fo2.poNo ? ' · PO ' + fo2.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
+    }
     var grand = {}, cur = null, sub = null, n = 0, lastKey = '', advBy = {}, payDir = dir === 'AR' ? 'IN' : 'OUT', bc = bookCtx_(), baseBy = {}, hasForeign = false, missB = 0;
 
-    led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
+    if (!ordFilter) led.payments.forEach(function (x) { var b = led.payBal[x.id]; if (b && b.unalloc !== 0 && x.direction === payDir)
         advBy[x.partnerId + '|' + x.currency] = (advBy[x.partnerId + '|' + x.currency] || 0) + b.unalloc; });
     function flush() { if (sub) {
         addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name, currency: sub.cur, gross: sub.g, settled: sub.s, out: sub.o }, sub.cur);
         var adv = advBy[sub.key] || 0;
         if (adv) {
-            addRow_(rep, 'data', { desc: (dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)'), currency: sub.cur, settled: adv, out: -adv }, sub.cur);
-            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
+
+            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(adv, sub.cur) + ' ' + sub.cur, currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
             sumCur_(grand, sub.cur, 'a', adv);
         }
     } }
@@ -8556,7 +8601,7 @@ function rep02_(user, code, params) {
         if (key !== lastKey) {
             flush();
             sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0, key: key };
-            addRow_(rep, 'group', { desc: sub.name + ' (' + d.currency + ')' }, d.currency);
+            addRow_(rep, 'group', { stt: sub.name + ' – ' + d.currency }, d.currency);
             lastKey = key;
         }
         var b = led.bal.byDoc[d.id], hs = serviceCodesOfDoc_(lineByDoc[d.id] || []).join(', '), first = (lineByDoc[d.id] || []).slice().sort(function (x, y) { return x.lineNo - y.lineNo; })[0];
@@ -8583,18 +8628,16 @@ function rep02_(user, code, params) {
     });
     flush();
     Object.keys(grand).sort().forEach(function (c) {
-        addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
+        addRow_(rep, 'total', { desc: 'TỔNG CỘNG ' + c, currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
         var ga = grand[c].a || 0;
-        if (ga) {
-            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)', currency: c, settled: ga, out: -ga }, c);
-            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
-        }
+        if (ga)
+            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(ga, c) + ' ' + c, currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
     });
     if (hasForeign) {
 
         addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
-        var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {};
-        led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
+        var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {}, nb = 0;
+        if (!ordFilter) led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
             var v = bookOfAdv_(bc, x, pb2.unalloc);
             if (v === null)
                 missB++;
@@ -8605,23 +8648,21 @@ function rep02_(user, code, params) {
         } });
         Object.keys(baseBy).sort(function (a, c) { return cmpStr_(baseBy[a].name, baseBy[c].name); }).forEach(function (k) {
             var o = baseBy[k];
-            addRow_(rep, 'data', { stt: ++n, desc: o.name, currency: BASE_CUR_, gross: o.g, settled: o.s, out: o.o }, BASE_CUR_);
+            addRow_(rep, 'data', { stt: ++nb, desc: o.name, currency: BASE_CUR_, gross: o.g, settled: o.s, out: o.o }, BASE_CUR_);
             tb.g += o.g;
             tb.s += o.s;
             tb.o += o.o;
         });
         addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND', currency: BASE_CUR_, gross: tb.g, settled: tb.s, out: tb.o }, BASE_CUR_);
-        if (advTot) {
-            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước) – quy đổi VND' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước) – quy đổi VND', currency: BASE_CUR_, settled: advTot, out: -advTot }, BASE_CUR_);
-            addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: BASE_CUR_, gross: tb.g, settled: tb.s + advTot, out: tb.o - advTot }, BASE_CUR_);
-        }
+        if (advTot)
+            addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(advTot, BASE_CUR_) + ' ' + BASE_CUR_, currency: BASE_CUR_, gross: tb.g, settled: tb.s + advTot, out: tb.o - advTot }, BASE_CUR_);
         if (missB)
             rep.notes.push(missB + ' chứng từ/phiếu chưa có tỷ giá ghi nhận nên chưa được quy đổi VND (số nguyên tệ vẫn đủ).');
         rep.notes.push('Phần "Quy đổi VND" là giá trị ghi sổ theo tỷ giá đã lưu lúc ghi nhận, gộp mọi tiền tệ của từng đối tác (không đánh giá lại theo tỷ giá ngày chốt – xem R14).');
     }
     if (!docs.length)
         rep.notes.push('Không có chứng từ phù hợp bộ lọc.');
-    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện thành dòng riêng ở cuối mỗi đối tác; dòng "gồm ứng trước" là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
+    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện ở dòng "gồm ' + (dir === 'AR' ? 'ứng trước' : 'trả trước') + '" cuối mỗi đối tác (ghi rõ số tiền trong nhãn dòng): đó là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
     rep.notes.push('Ô "Đến hạn" hiển thị — khi chưa có căn cứ hạn thanh toán; không suy từ ngày hóa đơn.');
     rep.signatures = true;
     return rep;
@@ -9186,22 +9227,26 @@ function rep13_(user, code, params) {
     rep.notes.push('Chênh lệch = số nguyên tệ phân bổ × (tỷ giá ngày thu/chi − tỷ giá ngày ghi nhận chứng từ); phải thu: tỷ giá tăng là lãi, phải trả: tỷ giá tăng là lỗ. Dương là lãi, âm là lỗ. Tỷ giá lấy theo ngày thực thu/chi; nhập tay được ưu tiên, nếu chưa có thì lấy Google Finance.');
     if (missing)
         rep.notes.push(missing + ' dòng thiếu tỷ giá (chứng từ hoặc phiếu cũ chưa có tỷ giá): chênh lệch tính 0 — hãy nhập tỷ giá ở menu Tỷ giá cho các ngày đó.');
-    rep.notes.push('Báo cáo chỉ liệt kê để kế toán hạch toán; ứng dụng chưa tự ghi bút toán chênh lệch tỷ giá.');
+    rep.notes.push('Báo cáo chỉ liệt kê. Bút toán chênh lệch tỷ giá theo tháng (đã thực hiện + đánh giá lại cuối kỳ) lập và ghi nhận ở menu Tỷ giá → Bút toán chênh lệch.');
     return rep;
 }
 
 function rep14_(user, code, params) {
-    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Còn nợ (nguyên tệ)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
+    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Còn nợ đã quy đổi (nguyên tệ)', 'text', 'right'), col_('unconv', 'Chưa quy đổi – thiếu tỷ giá (nguyên tệ)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
         col_('orig', 'Quy đổi theo tỷ giá ghi nhận (VND)', 'money'), col_('now', 'Quy đổi theo tỷ giá ngày chốt (VND)', 'money'), col_('diff', 'Chênh lệch chưa thực hiện (VND)', 'money')]);
     var rv = fxRevalLines_(user, params.asOf, { currency: params.currency, group: params.group });
     rv.items.forEach(function (a) {
-        addRow_(rep, 'data', { dir: a.dir === 'AR' ? 'Phải thu' : 'Phải trả', currency: a.cur, amount: fmtMoney_(a.out, a.cur), rate: a.rateE4 ? fxText_(a.rateE4) + ' (' + rptDateVn_(a.rateDate) + ')' : 'chưa có', orig: a.orig, now: a.now, diff: a.diff }, BASE_CUR_);
+        addRow_(rep, 'data', { dir: a.dir === 'AR' ? 'Phải thu' : 'Phải trả', currency: a.cur, amount: fmtMoney_(a.conv, a.cur), unconv: a.unconv ? fmtMoney_(a.unconv, a.cur) : '', rate: a.rateE4 ? fxText_(a.rateE4) + ' ' + FX_BASIS_VN_[a.basis] + ' (' + rptDateVn_(a.rateDate) + ')' : 'chưa có', orig: a.orig, now: a.now, diff: a.diff }, BASE_CUR_);
     });
     if (!rep.rows.length)
         rep.notes.push('Không có công nợ ngoại tệ còn lại tại ngày chốt.');
     if (rv.missing)
         rep.notes.push(rv.missing + ' dòng công nợ thiếu tỷ giá ghi nhận hoặc tỷ giá ngày chốt nên chưa quy đổi VND (cột nguyên tệ vẫn đủ). Nhập tỷ giá ở menu Tỷ giá.');
     rv.noRate.forEach(function (c) { rep.notes.push('Chưa có tỷ giá ' + c + ' nào không sau ngày chốt.'); });
+    rv.midFallback.forEach(function (c) { rep.notes.push('Chưa nhập tỷ giá ' + (c.indexOf('phải thu') === 0 ? 'mua' : 'bán') + ' ở ngày chốt cho ' + c + ': tạm dùng tỷ giá chung.'); });
+    rep.notes.push('Đánh giá lại phải thu theo tỷ giá MUA, phải trả theo tỷ giá BÁN của ngân hàng (nhập ở menu Tỷ giá); chưa nhập mua/bán thì dùng tỷ giá chung.');
+    rv.stale.forEach(function (c) { rep.notes.push('Tỷ giá ngày chốt của ' + c + ' đã cũ (hơn 7 ngày trước ngày chốt): nên nhập tỷ giá đúng ngày chốt trước khi dùng số chênh lệch này.'); });
+    rep.notes.push('Chỉ đánh giá lại công nợ còn lại theo chứng từ bằng một tỷ giá/ngày; tiền ứng trước/trả trước chưa phân bổ không đánh giá lại (khoản trả trước thuộc nhóm phi tiền tệ).');
     rep.notes.push('Tỷ giá ngày chốt là tỷ giá gần nhất trong bảng tỷ giá không sau ngày chốt (báo cáo không tự lấy Google Finance). Chênh lệch chưa thực hiện chỉ để tham khảo ở báo cáo này; bút toán đánh giá lại tạo ở menu Tỷ giá → Bút toán chênh lệch.');
     return rep;
 }

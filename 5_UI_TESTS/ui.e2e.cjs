@@ -842,6 +842,44 @@ await suite('46. R36: Tổng hợp công nợ (Khách hàng/NCC) có công tắc
   await pg.locator('[data-cur-btn="USD"]').click();eq(await mode(),'USD');r=await row();ok(/USD/.test(r)&&!/5\.000\.000/.test(r),'chỉ USD: '+r);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('47. Bản in giống màn hình: chỉ in bản báo cáo (ẩn ô tham số, tiêu đề trang), khổ giấy theo mẫu (R03 ngang, R01 dọc), nhãn dòng nhóm hiện ở mọi cột',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});
+  const open=async(code)=>{await go(pg,'#/reports',700);await pg.evaluate(c=>{const s=document.querySelector('select');s.value=c;s.dispatchEvent(new Event('change'))},code);await pg.waitForTimeout(500);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200)};
+  const media=(buf)=>{const m=/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(buf.toString('latin1'));return m?[+m[1],+m[2]]:null};
+  await open('R03');await pg.emulateMedia({media:'print'});
+  const vis=await pg.evaluate(()=>{const d=el=>!el||getComputedStyle(el).display==='none';const card=[...document.querySelectorAll('.card')].find(c=>/Mẫu báo cáo/.test(c.textContent)&&!c.querySelector('.report'));return {form:d(card),head:d(document.querySelector('.page-head')),report:!d(document.querySelector('.report')),land:document.querySelector('.report').classList.contains('land')}});
+  eq(vis,{form:true,head:true,report:true,land:true},'in: ẩn ô tham số và tiêu đề trang, giữ bản báo cáo, mẫu ngang');
+  const pdf3=await pg.pdf({preferCSSPageSize:true,printBackground:true}),m3=media(pdf3);ok(m3&&m3[0]>m3[1],'R03 in khổ ngang: '+JSON.stringify(m3));
+  await pg.emulateMedia({media:'screen'});await open('R01');await pg.emulateMedia({media:'print'});
+  eq(await pg.evaluate(()=>document.querySelector('.report').classList.contains('port')),true);const pdf1=await pg.pdf({preferCSSPageSize:true,printBackground:true}),m1=media(pdf1);ok(m1&&m1[0]<m1[1],'R01 in khổ dọc: '+JSON.stringify(m1));
+  await pg.emulateMedia({media:'screen'});
+  const txt=await pg.evaluate(()=>{const rep={orientation:'landscape',code:'R04',title:'T',meta:{entity:{},asOf:'2026-10-25',params:{}},columns:[{key:'stt',label:'STT',type:'int',align:'center'},{key:'svc',label:'Mã DV',type:'text',align:'left'},{key:'gross',label:'Tiền',type:'money',align:'right'}],rows:[{t:'group',cells:{svc:'Đợt: A (USD)'},currency:'USD'},{t:'data',cells:{stt:1,svc:'FWD',gross:100},currency:'USD'}],notes:[],words:[],issueBlockers:[],signatures:false};return renderReport(rep).innerText});
+  ok(/Đợt: A \(USD\)/.test(txt),'nhãn nhóm đặt ở cột không phải cột đầu vẫn hiện: '+txt.slice(0,200));
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('48. R02/R03 có ô "Đơn hàng cụ thể" và "Tìm theo số đơn / PO"; chọn đơn thì gửi orderId, tiêu đề ghi đơn; tiêu đề báo cáo luôn chữ tối (đọc được trên giao diện tối)',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/reports',900);
+  for(const code of ['R03','R02']){
+    await pg.evaluate(c=>{const s=document.querySelector('select');s.value=c;s.dispatchEvent(new Event('change'))},code);await pg.waitForTimeout(600);
+    const fld=t=>pg.locator('.field',{hasText:t}).first();
+    eq(await fld('Đơn hàng cụ thể').locator('select').count(),1,code+': có ô chọn đơn');eq(await fld('Tìm theo số đơn / PO').locator('input').count(),1,code+': có ô tìm đơn/PO');
+    const val=await pg.evaluate(()=>{const s=[...document.querySelectorAll('.field')].find(f=>/Đơn hàng cụ thể/.test(f.textContent)).querySelector('select');return s.options.length>1?s.options[1].value:''});ok(val,'có đơn để chọn');
+    await fld('Đơn hàng cụ thể').locator('select').selectOption(val);await pg.getByText('Xem báo cáo').first().click();await pg.waitForTimeout(1200);
+    eq(last(calls,'report.run').payload.params.orderId,val,code+': gửi orderId');ok(/Đơn hàng:/.test(await pg.locator('.report').innerText()),code+': tiêu đề ghi đơn đang lọc');
+  }
+  const col=await pg.evaluate(()=>getComputedStyle(document.querySelector('.report h2')).color);ok(/rgb\(17, 17, 17\)/.test(col),'tiêu đề chữ tối: '+col);
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('49. Menu Tỷ giá có ô tỷ giá mua/bán; lưu gửi buy/sell lên máy chủ; bảng liệt kê cột Mua/Bán; mua > bán bị chặn ngay trên form',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});await go(pg,'#/fx',900);
+  const fld=t=>pg.locator('.field',{hasText:t}).first();
+  eq(await fld('Tỷ giá mua của ngân hàng').locator('input').count(),1);eq(await fld('Tỷ giá bán của ngân hàng').locator('input').count(),1);
+  const th=await pg.locator('table th').allInnerTexts();ok(th.some(t=>/^Mua$/i.test(t.trim()))&&th.some(t=>/^Bán$/i.test(t.trim())),'cột Mua/Bán: '+th.join('|'));
+  await fld('Tỷ giá chung').locator('input').fill('25.200');await fld('Tỷ giá mua của ngân hàng').locator('input').fill('25.300');await fld('Tỷ giá bán của ngân hàng').locator('input').fill('25.100');
+  const n0=calls.filter(c=>c.action==='fx.save').length;await pg.getByText('Lưu tỷ giá nhập tay').first().click();await pg.waitForTimeout(500);eq(calls.filter(c=>c.action==='fx.save').length,n0,'mua > bán: không gửi');
+  await fld('Tỷ giá mua của ngân hàng').locator('input').fill('25.150');await fld('Tỷ giá bán của ngân hàng').locator('input').fill('25.250');await pg.getByText('Lưu tỷ giá nhập tay').first().click();await pg.waitForTimeout(900);
+  const sv=last(calls,'fx.save');ok(sv,'đã gửi fx.save');eq([sv.payload.buy,sv.payload.sell],['25150','25250']);eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;
