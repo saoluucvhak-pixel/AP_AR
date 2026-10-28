@@ -53,7 +53,7 @@ suite('5. R01: khối "Quy đổi VND" (tổng, đã thu, còn lại), ứng tr�
 });
 suite('6. R02: khối "Quy đổi VND" theo đối tác (gồm mọi tiền tệ), dòng tổng, ứng trước và "gồm ứng trước"; R03 tương tự cho phải trả',()=>{
   const w=world(),R=rows(w.ctx.rep02_(full,'R02',{asOf:ASOF})),g=R.findIndex(x=>x.t==='group'&&/^Quy đổi VND/.test(x.stt||''));ok(g>0);const sec=R.slice(g),row=sec.find(x=>x.t==='data'&&x.desc==='ABC');eq([row.gross,row.settled,row.out],[25300+5000000+5040,10120,EXP.ARout]);
-  const tot=sec.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].out],['TỔNG QUY ĐỔI VND',EXP.ARout]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG QUY ĐỔI VND – đã thu gồm ứng trước',10120+EXP.ADV,EXP.ARout-EXP.ADV]);
+  const tot=sec.filter(x=>x.t==='total');eq([tot[0].desc,tot[0].out],['TỔNG QUY ĐỔI VND',EXP.ARout]);eq([tot[1].desc,tot[1].settled,tot[1].out],['TỔNG QUY ĐỔI VND – đã thu gồm ứng trước 2.530 VND',10120+EXP.ADV,EXP.ARout-EXP.ADV]);ok(!sec.some(x=>x.t==='data'&&/ứng trước/.test(x.desc||'')),'một dòng ứng trước, không lặp');eq(sec.filter(x=>x.t==='data').map(x=>x.stt),[1],'đánh số lại từ 1 trong khối quy đổi');
   const ap=rows(w.ctx.rep02_(full,'R03',{asOf:ASOF})),ga=ap.findIndex(x=>x.t==='group'&&/^Quy đổi VND/.test(x.stt||''));ok(ga>0);eq(ap.slice(ga).find(x=>x.t==='total').out,EXP.APout);
 });
 suite('7. R07: khối "Quy đổi VND" theo nhóm tuổi nợ: tổng các nhóm = tổng; khớp lõi',()=>{

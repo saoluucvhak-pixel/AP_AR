@@ -8501,8 +8501,8 @@ function rep02_(user, code, params) {
         addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name, currency: sub.cur, gross: sub.g, settled: sub.s, out: sub.o }, sub.cur);
         var adv = advBy[sub.key] || 0;
         if (adv) {
-            addRow_(rep, 'data', { desc: (dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)'), currency: sub.cur, settled: adv, out: -adv }, sub.cur);
-            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
+            // MỘT dòng: số tiền chưa phân bổ ghi ngay trong nhãn; "đã thu/đã trả" gồm cả phần này, "còn" đã trừ phần này
+            addRow_(rep, 'subtotal', { desc: 'Cộng ' + sub.name + ' – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(adv, sub.cur) + ' ' + sub.cur, currency: sub.cur, gross: sub.g, settled: sub.s + adv, out: sub.o - adv }, sub.cur);
             sumCur_(grand, sub.cur, 'a', adv);
         }
     } }
@@ -8511,7 +8511,7 @@ function rep02_(user, code, params) {
         if (key !== lastKey) {
             flush();
             sub = { name: partnerName_(led.pm, d.partnerId), cur: d.currency, g: 0, s: 0, o: 0, key: key };
-            addRow_(rep, 'group', { desc: sub.name + ' (' + d.currency + ')' }, d.currency);
+            addRow_(rep, 'group', { stt: sub.name + ' – ' + d.currency }, d.currency);
             lastKey = key;
         }
         var b = led.bal.byDoc[d.id], hs = serviceCodesOfDoc_(lineByDoc[d.id] || []).join(', '), first = (lineByDoc[d.id] || []).slice().sort(function (x, y) { return x.lineNo - y.lineNo; })[0];
@@ -8538,17 +8538,15 @@ function rep02_(user, code, params) {
     });
     flush();
     Object.keys(grand).sort().forEach(function (c) {
-        addRow_(rep, 'total', { desc: 'TỔNG CỘNG', currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
+        addRow_(rep, 'total', { desc: 'TỔNG CỘNG ' + c, currency: c, gross: grand[c].g, settled: grand[c].s, out: grand[c].o }, c);
         var ga = grand[c].a || 0;
-        if (ga) {
-            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước)' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước)', currency: c, settled: ga, out: -ga }, c);
-            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
-        }
+        if (ga)
+            addRow_(rep, 'total', { desc: 'TỔNG CỘNG – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(ga, c) + ' ' + c, currency: c, gross: grand[c].g, settled: grand[c].s + ga, out: grand[c].o - ga }, c);
     });
     if (hasForeign) {
         // Quy đổi VND (tham khảo): gộp mọi tiền tệ của từng đối tác theo tỷ giá đã lưu trên chứng từ/phiếu
         addRow_(rep, 'group', { stt: 'Quy đổi ' + BASE_CUR_ + ' – theo tỷ giá đã lưu trên từng chứng từ (tham khảo)' }, BASE_CUR_);
-        var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {};
+        var tb = { g: 0, s: 0, o: 0 }, advTot = 0, advPart = {}, nb = 0;
         led.payments.forEach(function (x) { var pb2 = led.payBal[x.id]; if (pb2 && pb2.unalloc > 0 && x.status === 'POSTED' && x.direction === payDir && baseBy[x.partnerId]) {
             var v = bookOfAdv_(bc, x, pb2.unalloc);
             if (v === null)
@@ -8560,23 +8558,21 @@ function rep02_(user, code, params) {
         } });
         Object.keys(baseBy).sort(function (a, c) { return cmpStr_(baseBy[a].name, baseBy[c].name); }).forEach(function (k) {
             var o = baseBy[k];
-            addRow_(rep, 'data', { stt: ++n, desc: o.name, currency: BASE_CUR_, gross: o.g, settled: o.s, out: o.o }, BASE_CUR_);
+            addRow_(rep, 'data', { stt: ++nb, desc: o.name, currency: BASE_CUR_, gross: o.g, settled: o.s, out: o.o }, BASE_CUR_);
             tb.g += o.g;
             tb.s += o.s;
             tb.o += o.o;
         });
         addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND', currency: BASE_CUR_, gross: tb.g, settled: tb.s, out: tb.o }, BASE_CUR_);
-        if (advTot) {
-            addRow_(rep, 'data', { desc: dir === 'AR' ? 'Tiền thu chưa phân bổ vào chứng từ (ứng trước) – quy đổi VND' : 'Tiền chi chưa phân bổ vào chứng từ (trả trước) – quy đổi VND', currency: BASE_CUR_, settled: advTot, out: -advTot }, BASE_CUR_);
-            addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND – ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' gồm ứng trước', currency: BASE_CUR_, gross: tb.g, settled: tb.s + advTot, out: tb.o - advTot }, BASE_CUR_);
-        }
+        if (advTot)
+            addRow_(rep, 'total', { desc: 'TỔNG QUY ĐỔI VND – ' + (dir === 'AR' ? 'đã thu gồm ứng trước ' : 'đã trả gồm trả trước ') + fmtMoney_(advTot, BASE_CUR_) + ' ' + BASE_CUR_, currency: BASE_CUR_, gross: tb.g, settled: tb.s + advTot, out: tb.o - advTot }, BASE_CUR_);
         if (missB)
             rep.notes.push(missB + ' chứng từ/phiếu chưa có tỷ giá ghi nhận nên chưa được quy đổi VND (số nguyên tệ vẫn đủ).');
         rep.notes.push('Phần "Quy đổi VND" là giá trị ghi sổ theo tỷ giá đã lưu lúc ghi nhận, gộp mọi tiền tệ của từng đối tác (không đánh giá lại theo tỷ giá ngày chốt – xem R14).');
     }
     if (!docs.length)
         rep.notes.push('Không có chứng từ phù hợp bộ lọc.');
-    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện thành dòng riêng ở cuối mỗi đối tác; dòng "gồm ứng trước" là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
+    rep.notes.push('Từng dòng chứng từ chỉ hiện phần đã phân bổ vào chứng từ đó. Tiền ' + (dir === 'AR' ? 'thu' : 'chi') + ' chưa phân bổ (ứng trước) của đối tác hiện ở dòng "gồm ' + (dir === 'AR' ? 'ứng trước' : 'trả trước') + '" cuối mỗi đối tác (ghi rõ số tiền trong nhãn dòng): đó là số ' + (dir === 'AR' ? 'đã thu' : 'đã trả') + ' thực tế của đối tác và số còn ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + ' sau khi trừ ứng trước (chỉ tính cho đối tác có chứng từ trong báo cáo).');
     rep.notes.push('Ô "Đến hạn" hiển thị — khi chưa có căn cứ hạn thanh toán; không suy từ ngày hóa đơn.');
     rep.signatures = true;
     return rep;
