@@ -8498,6 +8498,7 @@ function rep02_(user, code, params) {
         return d.direction === dir && docShownAt_(d, led.bal.byDoc[d.id]) && (!ordFilter || orderMatch(d)) && (!params.partnerId || d.partnerId === params.partnerId) && (!params.group || d.businessGroupCode === params.group) &&
             (!params.currency || d.currency === params.currency) && (!params.onlyOutstanding || led.bal.byDoc[d.id].out !== 0);
     }).sort(function (a, b) { return cmpStr_(partnerName_(led.pm, a.partnerId), partnerName_(led.pm, b.partnerId)) || cmpStr_(a.currency, b.currency) || cmpStr_(docEffDate_(a), docEffDate_(b)) || cmpStr_(a.docNo, b.docNo); });
+    rep.meta.partner = params.partnerId ? partnerName_(led.pm, params.partnerId) : 'Tất cả đối tác';
     if (ordFilter) {
         var fo2 = params.orderId ? octx.orders[params.orderId] : null;
         rep.meta.order = params.orderId ? (fo2 && orderInScope_(user, fo2, octx.pm) ? fo2.orderNo + (fo2.poNo ? ' · PO ' + fo2.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
