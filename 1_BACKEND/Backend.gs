@@ -6425,7 +6425,9 @@ function fxRevalLines_(user, asOf, filter) {
         a.diff = (a.dir === 'AR' ? 1 : -1) * (a.now - a.orig);
         return a;
     });
-    return { items: items, missing: miss, noRate: Object.keys(noRate) };
+    // Tỷ giá cuối kỳ quá cũ (>7 ngày trước ngày chốt) vẫn được dùng nhưng phải cảnh báo để kế toán nhập tỷ giá đúng ngày chốt
+    var stale = items.filter(function (a) { return a.rateDate && daysBetween_(a.rateDate, asOf) > 7; }).map(function (a) { return a.cur + ' (' + a.rateDate + ')'; }).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+    return { items: items, missing: miss, noRate: Object.keys(noRate), stale: stale };
 }
 // ===== Quỹ ngoại tệ: tỷ giá xuất theo BÌNH QUÂN GIA QUYỀN DI ĐỘNG =====
 // Mỗi tài khoản quỹ ngoại tệ (Catalog CASH_ACCOUNT có tiền tệ khác VND) là một "kho" tiền: số dư đầu kỳ (định giá theo tỷ giá ngày đầu sổ) + phiếu thu (nhập, theo tỷ giá ngày thực thu) − phiếu chi (xuất theo bình quân di động).
@@ -7592,6 +7594,7 @@ function fxPeriodItems_(periodId) {
     if (rv.missing)
         warnings.push(rv.missing + ' dòng công nợ ngoại tệ thiếu tỷ giá nên chưa đánh giá lại.');
     rv.noRate.forEach(function (c) { warnings.push('Chưa có tỷ giá ' + c + ' nào không sau ' + rptDateVn_(to) + '.'); });
+    rv.stale.forEach(function (c) { warnings.push('Tỷ giá cuối kỳ của ' + c + ' đã cũ (hơn 7 ngày trước ' + rptDateVn_(to) + '): nên nhập tỷ giá đúng ngày chốt rồi lập lại bút toán.'); });
     if (posted.length)
         warnings.push('Kỳ này đã có bút toán ghi nhận: chỉ thêm phần chênh lệch phát sinh thêm của "đã thực hiện"; đánh giá lại cuối kỳ cần đảo bút toán cũ trước nếu muốn tính lại.');
     items = items.filter(function (it) { return !(it.entryType === 'UNREALIZED' && posted.some(function (e) { return e.entryType === 'UNREALIZED' && e.currency === it.currency && e.direction === it.direction; })); });
@@ -9236,7 +9239,7 @@ function rep13_(user, code, params) {
     rep.notes.push('Chênh lệch = số nguyên tệ phân bổ × (tỷ giá ngày thu/chi − tỷ giá ngày ghi nhận chứng từ); phải thu: tỷ giá tăng là lãi, phải trả: tỷ giá tăng là lỗ. Dương là lãi, âm là lỗ. Tỷ giá lấy theo ngày thực thu/chi; nhập tay được ưu tiên, nếu chưa có thì lấy Google Finance.');
     if (missing)
         rep.notes.push(missing + ' dòng thiếu tỷ giá (chứng từ hoặc phiếu cũ chưa có tỷ giá): chênh lệch tính 0 — hãy nhập tỷ giá ở menu Tỷ giá cho các ngày đó.');
-    rep.notes.push('Báo cáo chỉ liệt kê để kế toán hạch toán; ứng dụng chưa tự ghi bút toán chênh lệch tỷ giá.');
+    rep.notes.push('Báo cáo chỉ liệt kê. Bút toán chênh lệch tỷ giá theo tháng (đã thực hiện + đánh giá lại cuối kỳ) lập và ghi nhận ở menu Tỷ giá → Bút toán chênh lệch.');
     return rep;
 }
 // R14: công nợ ngoại tệ còn lại quy đổi VND theo tỷ giá gần nhất không sau ngày chốt; chênh lệch CHƯA thực hiện chỉ để tham khảo (chưa ghi sổ).
@@ -9252,6 +9255,8 @@ function rep14_(user, code, params) {
     if (rv.missing)
         rep.notes.push(rv.missing + ' dòng công nợ thiếu tỷ giá ghi nhận hoặc tỷ giá ngày chốt nên chưa quy đổi VND (cột nguyên tệ vẫn đủ). Nhập tỷ giá ở menu Tỷ giá.');
     rv.noRate.forEach(function (c) { rep.notes.push('Chưa có tỷ giá ' + c + ' nào không sau ngày chốt.'); });
+    rv.stale.forEach(function (c) { rep.notes.push('Tỷ giá ngày chốt của ' + c + ' đã cũ (hơn 7 ngày trước ngày chốt): nên nhập tỷ giá đúng ngày chốt trước khi dùng số chênh lệch này.'); });
+    rep.notes.push('Chỉ đánh giá lại công nợ còn lại theo chứng từ bằng một tỷ giá/ngày; tiền ứng trước/trả trước chưa phân bổ không đánh giá lại (khoản trả trước thuộc nhóm phi tiền tệ).');
     rep.notes.push('Tỷ giá ngày chốt là tỷ giá gần nhất trong bảng tỷ giá không sau ngày chốt (báo cáo không tự lấy Google Finance). Chênh lệch chưa thực hiện chỉ để tham khảo ở báo cáo này; bút toán đánh giá lại tạo ở menu Tỷ giá → Bút toán chênh lệch.');
     return rep;
 }

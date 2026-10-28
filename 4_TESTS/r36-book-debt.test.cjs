@@ -66,4 +66,10 @@ suite('8. Cùng một con số ở mọi nơi: lõi = Tổng quan = Tổng hợp
     rows(c.rep01_(full,'R01',{asOf:ASOF})).find(x=>x.label==='TỔNG PHẢI THU QUY ĐỔI VND').out,rows(c.rep02_(full,'R02',{asOf:ASOF})).find(x=>x.desc==='TỔNG QUY ĐỔI VND').out,rows(c.rep07_(full,'R07',{asOf:ASOF})).find(x=>/PHẢI THU QUY ĐỔI/.test(x.partner||'')&&x.t==='total').total];
   vals.forEach(v=>eq(v,core));
 });
+suite('9. R14/bút toán đánh giá lại: cảnh báo tỷ giá cuối kỳ cũ (>7 ngày); R13 không còn nói "chưa tự ghi bút toán"',()=>{
+  const w=world(),c=w.ctx,fresh=c.fxRevalLines_(full,'2026-10-05',{}),old=c.fxRevalLines_(full,ASOF,{});
+  eq([...fresh.stale],[],'tỷ giá 01/10, chốt 05/10: chưa cũ');ok(old.stale.length===1&&/USD \(2026-10-01\)/.test(old.stale[0]),'chốt 23/10 dùng tỷ giá 01/10: '+old.stale.join('|'));
+  const r14=c.rep14_(full,'R14',{asOf:ASOF});ok(r14.notes.some(n=>/đã cũ/.test(n)),'R14 cảnh báo');ok(r14.notes.some(n=>/ứng trước.*không đánh giá lại/.test(n)),'R14 nêu rõ ứng trước không đánh giá lại');
+  ok(!c.rep13_(full,'R13',{asOf:ASOF}).notes.some(n=>/chưa tự ghi bút toán/.test(n)),'R13 ghi chú đã cập nhật');
+});
 console.log('Tổng kiểm tra:',steps);
