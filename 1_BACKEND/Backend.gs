@@ -2053,13 +2053,18 @@ function validateDocInput_(inp, env) {
             statusNote: maxStr_(inp.statusNote, 500), batchLabel: maxStr_(inp.batchLabel, 100), totalGrossMinor: total
         } };
 }
-function findDuplicateDocs_(doc, existing, selfId) {
+// opts.orderBased: hóa đơn lập từ các khoản phát sinh của đơn (mỗi khoản chỉ lập được một lần nên không thể trùng dòng). Một hóa đơn thật của đối tác có thể được lập thành nhiều chứng từ (chọn các khoản của đơn làm nhiều lần):
+// cùng số + ký hiệu + ngày hóa đơn với chứng từ cũng lập từ khoản phát sinh, cùng chiều/đối tác/tiền tệ thì KHÔNG coi là nghi trùng.
+function findDuplicateDocs_(doc, existing, selfId, opts) {
     var out = [];
     existing.forEach(function (d) {
         if (d.id === selfId || d.partnerId !== doc.partnerId || d.currency !== doc.currency || d.status === 'DELETED')
             return;
-        if (doc.invoiceNo && d.invoiceNo === doc.invoiceNo && (d.invoiceSerial || '') === (doc.invoiceSerial || ''))
+        if (doc.invoiceNo && d.invoiceNo === doc.invoiceNo && (d.invoiceSerial || '') === (doc.invoiceSerial || '')) {
+            if (opts && opts.orderBased && d.source === 'ORDER' && d.direction === doc.direction && d.docType === 'INVOICE' && (d.invoiceDate || '') === (doc.invoiceDate || '') && d.status !== 'REJECTED' && d.status !== 'REVERSED')
+                return;
             out.push({ id: d.id, docNo: d.docNo, reason: 'Cùng số hóa đơn' });
+        }
         else if (d.docDate === doc.docDate && d.totalGrossMinor === doc.totalGrossMinor && d.direction === doc.direction)
             out.push({ id: d.id, docNo: d.docNo, reason: 'Cùng ngày và số tiền' });
     });
@@ -5315,7 +5320,7 @@ function accrualInvoice_(user, req) {
             throw err_('VALIDATION_FAILED', 'Dữ liệu hóa đơn chưa hợp lệ', v.errors);
         resolveLineRefs_(tx, raw, v.lines, group, partner.id, input.direction);
         var autoDue = applyPartnerTerm_(v.doc, partner);
-        var dups = findDuplicateDocs_(v.doc, tx.rows('DebtDoc'), null);
+        var dups = findDuplicateDocs_(v.doc, tx.rows('DebtDoc'), null, { orderBased: true });
         var doc = tx.insert('DebtDoc', Object.assign({ docNo: '', isOpening: 0, adjustsDocId: '', reversesDocId: '' }, v.doc, { status: 'DRAFT', source: 'ORDER', assuranceLevel: 'VERIFIED', sourceKey: accs.map(function (a) { return a.id; }).join(','),
             warningsJson: dups.length ? JSON.stringify({ duplicates: dups }) : '', searchText: normText_(partner.shortName + ' ' + v.doc.invoiceNo) }));
         v.lines.forEach(function (l, i) {
