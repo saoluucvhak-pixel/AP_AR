@@ -9232,8 +9232,8 @@ function rep13_(user, code, params) {
 }
 
 function rep14_(user, code, params) {
-    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Còn nợ đã quy đổi (nguyên tệ)', 'text', 'right'), col_('unconv', 'Chưa quy đổi – thiếu tỷ giá (nguyên tệ)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
-        col_('orig', 'Quy đổi theo tỷ giá ghi nhận (VND)', 'money'), col_('now', 'Quy đổi theo tỷ giá ngày chốt (VND)', 'money'), col_('diff', 'Chênh lệch chưa thực hiện (VND)', 'money')]);
+    var rep = newReport_(code, params, [col_('dir', 'Loại công nợ'), col_('currency', 'Ngoại tệ', 'text', 'center'), col_('amount', 'Đã quy đổi (nguyên tệ)', 'text', 'right'), col_('unconv', 'Chưa quy đổi (thiếu tỷ giá)', 'text', 'right'), col_('rate', 'Tỷ giá ngày chốt', 'text', 'right'),
+        col_('orig', 'Theo tỷ giá ghi nhận (VND)', 'money'), col_('now', 'Theo tỷ giá ngày chốt (VND)', 'money'), col_('diff', 'Chênh lệch chưa TH (VND)', 'money')]);
     var rv = fxRevalLines_(user, params.asOf, { currency: params.currency, group: params.group });
     rv.items.forEach(function (a) {
         addRow_(rep, 'data', { dir: a.dir === 'AR' ? 'Phải thu' : 'Phải trả', currency: a.cur, amount: fmtMoney_(a.conv, a.cur), unconv: a.unconv ? fmtMoney_(a.unconv, a.cur) : '', rate: a.rateE4 ? fxText_(a.rateE4) + ' ' + FX_BASIS_VN_[a.basis] + ' (' + rptDateVn_(a.rateDate) + ')' : 'chưa có', orig: a.orig, now: a.now, diff: a.diff }, BASE_CUR_);
