@@ -249,6 +249,7 @@ function cachePrefetchRows_(action) {
     var deps = {
         'app.bootstrap': ['Partner', 'Catalog', 'Config'],
         'doc.list': ['Partner', 'DebtDoc', 'DebtLine', 'Allocation', 'ServiceFile', 'Order', 'Accrual', 'AccrualSplit'],
+        'order.options': ['Partner', 'Order'],
         'payment.list': ['Partner', 'Payment', 'Allocation', 'AppUser'],
         'workbench.summary': ['Config', 'Partner', 'DebtDoc', 'DebtLine', 'Allocation', 'Order'],
         'dashboard.summary': ['Config', 'Partner', 'DebtDoc', 'DebtLine', 'Allocation', 'Order', 'Payment'],
@@ -4436,6 +4437,14 @@ function orderOut_(o, D) {
     var list = D.accByOrder[o.id] || [];
     return { id: o.id, orderNo: o.orderNo, poNo: o.poNo, customerPartnerId: o.customerPartnerId, customerName: partnerName_(D.pm, o.customerPartnerId), orderDate: o.orderDate, group: o.businessGroupCode, currency: o.currency,
         services: servicesOut_(o), serviceCode: orderServices_(o).length ? orderServices_(o)[0].code : '', serviceName: servicesOut_(o).map(function (x) { return x.code; }).join(', '), hsdvNo: servicesOut_(o).map(function (x) { return x.hsdvNo; }).filter(Boolean).join(', '), status: o.status, archivedAt: o.archivedAt || '', archivedBy: o.archivedBy || '', archiveNote: o.archiveNote || '', note: o.note, version: o.version, totals: orderTotals(list), accrualCount: list.filter(function (a) { return a.status !== 'CANCELLED'; }).length };
+}
+
+var ORDER_OPTIONS_MAX_ = 5000;
+function orderOptions_(user, req) {
+    requirePerm_(user, 'read');
+    var pm = partnerMap_(), list = repoValid_('Order').filter(function (o) { return o.status !== 'DELETED' && orderInScope_(user, o, pm); });
+    list.sort(function (a, b) { return cmpStr_(b.orderDate || '', a.orderDate || '') || cmpStr_(a.orderNo || '', b.orderNo || ''); });
+    return { total: list.length, truncated: list.length > ORDER_OPTIONS_MAX_, items: list.slice(0, ORDER_OPTIONS_MAX_).map(function (o) { return { id: o.id, orderNo: o.orderNo, poNo: o.poNo || '', customerName: partnerName_(pm, o.customerPartnerId) }; }) };
 }
 function orderList_(user, req) {
     requirePerm_(user, 'read');
@@ -10362,7 +10371,7 @@ function warmCache_() {
     assertReadSnapshot_(v);
 }
 
-var RC_ACTIONS_ = { 'doc.list': 1, 'doc.get': 1, 'order.list': 1, 'order.get': 1, 'payment.list': 1, 'payment.get': 1, 'dashboard.summary': 1, 'dashboard.uninvoiced': 1, 'workbench.summary': 1, 'approval.list': 1, 'alert.overview': 1, 'accrual.list': 1, 'report.run': 1, 'app.bootstrap': 1 };
+var RC_ACTIONS_ = { 'doc.list': 1, 'doc.get': 1, 'order.list': 1, 'order.options': 1, 'order.get': 1, 'payment.list': 1, 'payment.get': 1, 'dashboard.summary': 1, 'dashboard.uninvoiced': 1, 'workbench.summary': 1, 'approval.list': 1, 'alert.overview': 1, 'accrual.list': 1, 'report.run': 1, 'app.bootstrap': 1 };
 var RC_TTL_ = 600, RC_MAX_ = 90000;
 var RM_ACTIONS_ = { 'dashboard.summary': 1, 'dashboard.uninvoiced': 1, 'workbench.summary': 1, 'app.bootstrap': 1 };
 function respKey_(user, action, payload, version) {
@@ -10471,7 +10480,7 @@ function routes_() {
         'partner.list': { fn: partnerList_ }, 'partner.get': { fn: partnerGet_ }, 'partner.save': { fn: partnerSave_, write: true }, 'partner.bulkCommit': { fn: partnerBulkCommit_, write: true },
         'doc.list': { fn: docList_ }, 'doc.get': { fn: docGet_ }, 'doc.save': { fn: docSave_, write: true }, 'doc.submit': { fn: docSubmit_, write: true }, 'doc.approve': { fn: docApprove_, write: true },
         'doc.reject': { fn: docReject_, write: true }, 'doc.post': { fn: docPost_, write: true }, 'doc.delete': { fn: docDelete_, write: true }, 'doc.adjust': { fn: docAdjust_, write: true }, 'doc.reverse': { fn: docReverse_, write: true },
-        'order.list': { fn: orderList_ }, 'order.get': { fn: orderGet_ }, 'order.save': { fn: orderSave_, write: true }, 'order.setStatus': { fn: orderSetStatus_, write: true }, 'order.archiveCheck': { fn: orderArchiveCheck_ }, 'order.archive': { fn: orderArchive_, write: true }, 'order.unarchive': { fn: orderUnarchive_, write: true }, 'order.assignService': { fn: orderAssignService_, write: true },
+        'order.list': { fn: orderList_ }, 'order.options': { fn: orderOptions_ }, 'order.get': { fn: orderGet_ }, 'order.save': { fn: orderSave_, write: true }, 'order.setStatus': { fn: orderSetStatus_, write: true }, 'order.archiveCheck': { fn: orderArchiveCheck_ }, 'order.archive': { fn: orderArchive_, write: true }, 'order.unarchive': { fn: orderUnarchive_, write: true }, 'order.assignService': { fn: orderAssignService_, write: true },
         'accrual.save': { fn: accrualSave_, write: true }, 'accrual.cancel': { fn: accrualCancel_, write: true }, 'accrual.invoice': { fn: accrualInvoice_, write: true }, 'accrual.list': { fn: accrualList_ }, 'order.bulkPreview': { fn: orderBulkPreview_ }, 'order.bulkCommit': { fn: orderBulkCommit_, write: true }, 'doc.bulkPreview': { fn: docBulkPreview_ }, 'doc.bulkSuggest': { fn: docBulkSuggest_ }, 'doc.bulkCommit': { fn: docBulkCommit_, write: true },
         'passthrough.list': { fn: passList_ }, 'passthrough.candidates': { fn: passCandidates_ }, 'passthrough.links': { fn: passLinks_ }, 'passthrough.link': { fn: passLink_, write: true }, 'passthrough.unlink': { fn: passUnlink_, write: true }, 'passthrough.report': { fn: passReport_ },
         'transfer.list': { fn: xferList_ }, 'transfer.save': { fn: xferSave_, write: true }, 'transfer.post': { fn: xferPost_, write: true }, 'transfer.reverse': { fn: xferReverse_, write: true }, 'transfer.delete': { fn: xferDelete_, write: true },

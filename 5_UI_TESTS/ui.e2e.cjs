@@ -87,7 +87,7 @@ if(process.env.SHOTS_DIR){const dir=process.env.SHOTS_DIR,tag=process.env.SHOTS_
   await browser.close();console.log('đã chụp',tag);return;}
 await suite('1. Mọi menu dựng xong, không lỗi JS/console; tên menu một dòng',async()=>{
   const w=build(),{pg,errs,calls}=await newPage(browser,w);
-  const subs=calls.flatMap(c=>c.action==='sys.batch'?(c.payload.calls||[]).map(x=>x.action):[c.action]),acts=calls.map(c=>c.action);eq(subs.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+subs.join(','));eq(calls[0].action==='sys.batch'?calls[0].payload.calls[0].action:calls[0].action,'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!subs.includes('dashboard.summary')&&!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status','app.bootstrap','workbench.summary'].indexOf(x.action)<0)),'khởi động không chờ batch tính số liệu nặng (chỉ bootstrap + tổng hợp Bàn làm việc, lô huy hiệu nhẹ chạy sau)');ok(subs.includes('workbench.summary'),'tổng hợp Bàn làm việc có tải ở khởi động (đi cùng lượt bootstrap)');await go(pg,'#/workbench',700);
+  const subs=calls.flatMap(c=>c.action==='sys.batch'?(c.payload.calls||[]).map(x=>x.action):[c.action]),acts=calls.map(c=>c.action);eq(subs.filter(a=>a==='app.bootstrap').length,1,'khởi động chỉ tải bootstrap một lần: '+subs.join(','));eq(calls[0].action==='sys.batch'?calls[0].payload.calls[0].action:calls[0].action,'app.bootstrap','xác thực và danh mục tải trước số liệu');ok(!subs.includes('dashboard.summary')&&!calls.some(c=>c.action==='sys.batch'&&(c.payload.calls||[]).some(x=>['approval.list','sys.status','app.bootstrap','workbench.summary','order.options'].indexOf(x.action)<0)),'khởi động không chờ batch tính số liệu nặng (lô đầu chỉ gồm bootstrap, tổng hợp Bàn làm việc, danh sách đơn nhẹ và hai huy hiệu nhẹ)');ok(subs.includes('workbench.summary'),'tổng hợp Bàn làm việc có tải ở khởi động (đi cùng lượt bootstrap)');await go(pg,'#/workbench',700);
   const links=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].map(a=>a.getAttribute('href')));ok(links.length>=10,'có menu: '+links.length);
   for(const l of links){if(/#\/(audit|backup)$/.test(l))continue;await go(pg,l,450);const bad=await pg.evaluate(()=>{const e=document.querySelector('.msg.danger,.error-box');return e?e.innerText.slice(0,120):''});if(bad&&!/flow|Luồng/i.test(l))errs.push(l+' → '+bad)}
   const wrapped=await pg.evaluate(()=>[...document.querySelectorAll('.side a.nav')].filter(a=>a.getBoundingClientRect().height>44).map(a=>a.textContent.trim()));
@@ -761,7 +761,7 @@ await suite('37. R35: tờ báo cáo giữ giấy trắng chữ đen khi giao di
 });
 await suite('38. Khởi động: bootstrap + tổng hợp Bàn làm việc đi chung MỘT lượt sys.batch; Bàn làm việc dùng lại kết quả nạp trước, không gọi lại workbench.summary',async()=>{
   const w=build();const {pg,errs,calls}=await newPage(browser,w);
-  const first=calls[0];eq(first.action,'sys.batch','lượt đầu là sys.batch');eq(first.payload.calls.map(c=>c.action),['app.bootstrap','workbench.summary']);
+  const first=calls[0];eq(first.action,'sys.batch','lượt đầu là sys.batch');eq(first.payload.calls.map(c=>c.action),['app.bootstrap','workbench.summary','order.options','approval.list','sys.status'],'lô đầu gồm cả danh sách đơn nhẹ và hai huy hiệu');eq(calls.length,1,'cả khởi động chỉ MỘT lượt qua Gateway (trước đây 3): '+calls.map(c=>c.action).join(','));
   eq(calls.filter(c=>c.action==='app.bootstrap').length,0,'không còn gọi app.bootstrap riêng');eq(calls.filter(c=>c.action==='workbench.summary').length,0,'Bàn làm việc không gọi lại workbench.summary');
   ok(await pg.locator('.wb').count()>0,'Bàn làm việc hiển thị');ok(await pg.locator('.wb-todo .skeleton').count()===0,'khung chờ được thay bằng nội dung (không treo khi dữ liệu nạp trước trả về ngay)');
   await pg.close();
@@ -805,6 +805,20 @@ await suite('42. Tổng hợp công nợ (tab Khách hàng/NCC) có cột "Còn 
   const hi=heads.findIndex(t=>/Còn nợ ròng/.test(t));const row=pg.locator('tbody tr',{hasText:'ABC'}).first();const cell=(await row.locator('td').allInnerTexts())[hi];
   const abc=d.find(x=>x.name==='ABC'),n=abc&&abc.net.AR.VND;ok(n===undefined?/—/.test(cell):new RegExp('Phải thu').test(cell),'ô còn nợ ròng của ABC hiển thị đúng dạng: '+cell+' / net='+n);
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('43. Số lượt qua Gateway: mở Công nợ/Đơn hàng không gọi thêm danh sách đơn (đã có từ lô khởi động); chỉ làm mới sau khi ghi dữ liệu; Tổng quan gửi hai lượt độc lập',async()=>{
+  const w=build();const {pg,errs,calls}=await newPage(browser,w);eq(calls.length,1,'khởi động một lượt');
+  const trip=async(h)=>{await pg.evaluate(()=>{S.dirty=false});const n=calls.length;await go(pg,h,1200);return calls.slice(n).map(c=>c.action)};
+  eq(await trip('#/docs/AR'),['doc.list'],'Công nợ: chỉ doc.list');eq(await trip('#/docs/AP'),['doc.list']);eq(await trip('#/orders'),['order.list'],'Đơn hàng: chỉ order.list');
+  ok(await pg.evaluate(()=>(S.orderOpts||[]).length>0),'ô lọc đơn có dữ liệu từ lô khởi động');
+  const d=await trip('#/dashboard');ok(d.includes('dashboard.summary')&&d.includes('dashboard.uninvoiced'),'Tổng quan gọi cả hai: '+d.join(','));ok(await pg.locator('#main').innerText().then(t=>!/Đang tính/.test(t)),'thẻ chưa lập hóa đơn đã có số liệu');
+  await pg.evaluate(()=>{invalidateReads_()});const aw=await trip('#/docs/AR');eq(aw.filter(x=>x==='order.options').length,1,'sau khi ghi dữ liệu: làm mới danh sách đơn đúng một lần: '+aw.join(','));ok(aw.includes('doc.list'),'vẫn tải danh sách công nợ');eq(await trip('#/docs/AP'),['doc.list'],'lần sau lại dùng bản nhớ');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
+await suite('44. Máy chủ cũ chưa có order.options: lô đầu vẫn vào được; ô lọc lùi về order.list',async()=>{
+  const w=build();delete w.ctx.routes_()['order.options'];const {pg,errs,calls}=await newPage(browser,w);ok(await pg.locator('.wb').count()>0,'vẫn vào Bàn làm việc');
+  await pg.evaluate(()=>{S.dirty=false;invalidateReads_()});const n=calls.length;await go(pg,'#/docs/AR',1500);const acts=calls.slice(n).map(c=>c.action);ok(acts.includes('order.options')&&acts.includes('order.list')&&acts.includes('doc.list'),'thử order.options rồi lùi về order.list: '+acts.join(','));
+  ok(await pg.evaluate(()=>(S.orderOpts||[]).length>0),'ô lọc vẫn có danh sách đơn');await pg.close();
 });
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}

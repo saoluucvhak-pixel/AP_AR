@@ -659,7 +659,7 @@ function perfPush(e) { PERF.push(e); if (PERF.length > 80)
 window.__perf = function () { return PERF.slice(); };
 var CODES_NO_RETRY = { UNAUTHENTICATED: 1, FORBIDDEN: 1, OUT_OF_SCOPE: 1, VALIDATION_FAILED: 1, NOT_FOUND: 1, MAINTENANCE_MODE: 1, STATE_TRANSITION_INVALID: 1, VERSION_CONFLICT: 1, IDEMPOTENCY_MISMATCH: 1, REQUEST_FAILED: 1 };
 var READ_INFLIGHT = {}, READ_EPOCH = 0;
-function invalidateReads_() { READ_EPOCH++; READ_INFLIGHT = {}; PRIME_ = {}; S.apprAt = 0; }
+function invalidateReads_() { READ_EPOCH++; READ_INFLIGHT = {}; PRIME_ = {}; S.apprAt = 0; S.orderOptsAt = 0; }
 var WRITE_RID = {};
 function api(action, payload, opt) {
     opt = opt || {};
@@ -1212,7 +1212,12 @@ async function route() {
     setNavActive();
     closeDrawer();
     renderView($('#main'));
-    refreshApprovals(false);
+    if (S.apprPre) {
+        applyApprovals(S.apprPre);
+        S.apprPre = null;
+    }
+    else
+        refreshApprovals(false);
 }
 function ensureShell() {
     if (S.shell)
@@ -1364,7 +1369,7 @@ async function boot() {
         // Một lượt qua Gateway (~1 giây mỗi lượt) cho cả bootstrap và tổng hợp Bàn làm việc (màn hình mặc định); kết quả tổng hợp được nạp trước, hết hạn sau 15 giây nếu không ai dùng.
         var pre = null;
         try {
-            pre = await apiRun('sys.batch', { calls: [{ action: 'app.bootstrap', payload: {} }, { action: 'workbench.summary', payload: {} }] }, {});
+            pre = await apiRun('sys.batch', { calls: [{ action: 'app.bootstrap', payload: {} }, { action: 'workbench.summary', payload: {} }, { action: 'order.options', payload: {} }, { action: 'approval.list', payload: { summaryOnly: true } }, { action: 'sys.status', payload: { summaryOnly: true } }] }, {});
         }
         catch (e) {
             if (e && (e.code === 'FORBIDDEN' || e.code === 'UNAUTHENTICATED'))
@@ -1376,6 +1381,15 @@ async function boot() {
                 var pk = READ_EPOCH + '|workbench.summary|' + JSON.stringify({ asOf: S.boot.today });
                 PRIME_[pk] = pre[1].data;
                 setTimeout(function () { delete PRIME_[pk]; }, 15000);
+            }
+            if (pre[2] && pre[2].ok)
+                setOrderOpts_(pre[2].data.items);
+            if (pre[3] && pre[3].ok) {
+                var ak = READ_EPOCH + '|approval.list|' + JSON.stringify({ summaryOnly: true });
+                PRIME_[ak] = pre[3].data;
+                setTimeout(function () { delete PRIME_[ak]; }, 15000);
+                S.apprPre = [pre[3], pre[4]];
+                S.apprAt = Date.now();
             }
         }
         else
@@ -3543,6 +3557,9 @@ VIEWS.cashcount = async function (r, main, page) {
 
 <script>var dashCur = null;
 VIEWS.dashboard = async function () {
+    // Hai lượt độc lập: gửi song song (thay vì nối tiếp ~1 giây mỗi lượt).
+    var unP = api('dashboard.uninvoiced', { asOf: S.asOf });
+    unP.catch(function () { });
     var d = await api('dashboard.summary', { asOf: S.asOf });
     var root = h('div');
     root.appendChild(h('h1', null, 'Tổng quan công nợ'));
@@ -3581,7 +3598,8 @@ VIEWS.dashboard = async function () {
     root.appendChild(h('div', { class: 'card' }, h('h3', null, 'Tiền ứng trước và khoản chưa phân bổ (K8)'), adv ? h('div', { class: 'grid g2' }, h('div', null, 'Nhận trước từ khách: ', h('b', null, fmtMoney(adv.IN.advance, dashCur)), ' · Thu chưa phân bổ: ', h('b', null, fmtMoney(adv.IN.other, dashCur))), h('div', null, 'Trả trước NCC: ', h('b', null, fmtMoney(adv.OUT.advance, dashCur)), ' · Chi chưa phân bổ: ', h('b', null, fmtMoney(adv.OUT.other, dashCur)))) : h('div', { class: 'hint' }, 'Không có khoản chưa phân bổ.'), h('div', { class: 'bar' }, h('button', { class: 'sm', onclick: function () { go('payments', { onlyUnallocated: '1', currency: dashCur }); } }, 'Xem phiếu chưa phân bổ'))));
     var unCard = h('div', { class: 'card' }, h('h3', null, 'Phát sinh chưa lập hóa đơn (K14)'), h('div', { class: 'loading-note' }, 'Đang tính…'));
     root.appendChild(unCard);
-    api('dashboard.uninvoiced', { asOf: S.asOf }).then(function (u) {
+    // Kết quả có thể về trước khi màn hình được gắn vào trang: trả sau một nhịp để kiểm tra unCard.isConnected ở then() thấy đã gắn.
+    unP.then(function (u) { return new Promise(function (res) { setTimeout(function () { res(u); }, 0); }); }).then(function (u) {
         if (!unCard.isConnected)
             return;
         var un = (u.uninvoiced || {})[dashCur];
@@ -4436,13 +4454,24 @@ function docOrderCell(x) {
         return h('span', { class: 'hint' }, x.ordersRestricted ? 'PO ngoài phạm vi xem' : (x.isOpening ? 'Dư đầu kỳ' : 'Không gắn PO'));
     return h('div', null, os.slice(0, 2).map(function (o) { return h('div', null, h('a', { href: '#/order/' + o.id }, o.orderNo), o.poNo ? h('span', { class: 'hint' }, ' · PO ' + o.poNo) : null); }), x.orderCount > 2 ? h('div', { class: 'hint', title: os.map(function (o) { return o.orderNo + (o.poNo ? ' · PO ' + o.poNo : ''); }).join('\n') }, '+' + (x.orderCount - 2) + ' đơn khác') : null, (x.poRefs || []).length ? h('div', { class: 'hint' }, 'PO NCC ' + x.poRefs.join(', ')) : null, x.ordersRestricted ? h('div', { class: 'hint' }, 'Có PO ngoài phạm vi xem') : null);
 }
+var ORDER_OPTS_TTL_MS = 300000;
+function setOrderOpts_(items) { S.orderOpts = (items || []).map(function (o) { return { v: o.id, l: o.orderNo + (o.poNo ? ' · PO ' + o.poNo : '') + (o.customerName ? ' · ' + o.customerName : '') }; }); S.orderOptsAt = Date.now(); }
+// Danh sách đơn cho ô lọc: dùng order.options (nhẹ), nhớ 5 phút; ghi dữ liệu thì làm mới (invalidateReads_). Máy chủ cũ chưa có order.options → lùi về order.list.
 async function ensureOrderOpts() {
+    if (S.orderOpts && S.orderOptsAt && Date.now() - S.orderOptsAt < ORDER_OPTS_TTL_MS)
+        return;
     try {
-        var od = await api('order.list', { pageSize: 200, adv: { flag: { includeArchived: true } } });
-        S.orderOpts = (od.items || []).map(function (o) { return { v: o.id, l: o.orderNo + (o.poNo ? ' · PO ' + o.poNo : '') + (o.customerName ? ' · ' + o.customerName : '') }; });
+        var od = await api('order.options', {});
+        setOrderOpts_(od.items);
     }
     catch (e) {
-        S.orderOpts = S.orderOpts || [];
+        try {
+            var ol = await api('order.list', { pageSize: 200, adv: { flag: { includeArchived: true } } });
+            setOrderOpts_(ol.items);
+        }
+        catch (e2) {
+            S.orderOpts = S.orderOpts || [];
+        }
     }
 }
 function orderOptionsLF() { return S.orderOpts || []; }
@@ -5411,6 +5440,26 @@ VIEWS.allocate = async function (r, main, page) {
         slot.appendChild(h('div', { class: 'hint' }, 'Hiện ' + d.items.length + '/' + d.total + ' phiếu đầu; phân bổ bớt rồi tải lại để xem tiếp.'));
 };
 // ---- Chờ duyệt: mọi chứng từ/phiếu đang chờ bạn duyệt hoặc ghi nhận, duyệt/từ chối ngay tại danh sách (vẫn có nút Xem chi tiết). ----
+// Áp kết quả hai huy hiệu (chờ duyệt, trạng thái hệ thống) lên số liệu và menu; dùng cho cả lượt khởi động (đã gộp trong lô đầu) lẫn làm mới định kỳ.
+function applyApprovals(res) {
+    if (res && res[0] && res[0].ok) {
+        S.apprCount = res[0].data.counts.total;
+        S.apprWaiting = res[0].data.counts.waitingOthers;
+        var a = S.shell && S.shell.links && S.shell.links.approvals, b = a && a.querySelector('.nbadge');
+        if (b) {
+            b.textContent = S.apprCount > 99 ? '99+' : String(S.apprCount);
+            b.style.display = S.apprCount > 0 ? '' : 'none';
+        }
+    }
+    if (res && res[1] && res[1].ok) {
+        var st = res[1].data, sa = S.shell && S.shell.links && S.shell.links.sysstatus, sb = sa && sa.querySelector('.nbadge');
+        if (sb) {
+            sb.textContent = String(st.flagCount);
+            sb.style.display = st.flagCount > 0 ? '' : 'none';
+            sb.style.background = st.status === 'FAIL' ? 'var(--danger)' : 'var(--accent)';
+        }
+    }
+}
 async function refreshApprovals(force) {
     if (!S.boot || !can('read') || document.hidden)
         return;
@@ -5423,24 +5472,7 @@ async function refreshApprovals(force) {
         calls.push({ action: 'sys.status', payload: { summaryOnly: true } });
     try {
         // Một lượt gọi duy nhất cho cả hai huy hiệu (mỗi lượt qua Gateway tốn ~1 giây).
-        var res = calls.length > 1 ? await apiRun('sys.batch', { calls: calls }, {}) : [{ ok: true, data: await api(calls[0].action, calls[0].payload) }];
-        if (res[0] && res[0].ok) {
-            S.apprCount = res[0].data.counts.total;
-            S.apprWaiting = res[0].data.counts.waitingOthers;
-            var a = S.shell && S.shell.links && S.shell.links.approvals, b = a && a.querySelector('.nbadge');
-            if (b) {
-                b.textContent = S.apprCount > 99 ? '99+' : String(S.apprCount);
-                b.style.display = S.apprCount > 0 ? '' : 'none';
-            }
-        }
-        if (res[1] && res[1].ok) {
-            var st = res[1].data, sa = S.shell && S.shell.links && S.shell.links.sysstatus, sb = sa && sa.querySelector('.nbadge');
-            if (sb) {
-                sb.textContent = String(st.flagCount);
-                sb.style.display = st.flagCount > 0 ? '' : 'none';
-                sb.style.background = st.status === 'FAIL' ? 'var(--danger)' : 'var(--accent)';
-            }
-        }
+        applyApprovals(calls.length > 1 ? await apiRun('sys.batch', { calls: calls }, {}) : [{ ok: true, data: await api(calls[0].action, calls[0].payload) }]);
     }
     catch (e) { }
 }
