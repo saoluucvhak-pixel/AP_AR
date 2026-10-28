@@ -6041,6 +6041,9 @@ function fxNearest_(cur, date, rows) {
 // Tỷ giá theo chiều: BUY (ngân hàng mua — dùng đánh giá lại phải thu, quỹ ngoại tệ) / SELL (ngân hàng bán — dùng đánh giá lại phải trả). Chưa nhập mua/bán thì dùng tỷ giá chung (basis MID).
 function fxSide_(row, side) {
     var v = side === 'BUY' ? row.buyE4 : side === 'SELL' ? row.sellE4 : 0;
+    // Tỷ giá Google Finance chỉ có một giá: mua = bán = tỷ giá chung (kể cả dòng lấy từ trước khi có cột mua/bán)
+    if (!(v > 0) && row.source === 'GOOGLE' && side !== 'MID' && row.rateE4 > 0)
+        v = row.rateE4;
     return v > 0 ? { e4: v, basis: side } : { e4: row.rateE4, basis: 'MID' };
 }
 function fxClosing_(cur, date, rows, side) {
@@ -6101,9 +6104,9 @@ function fxStore_(user, cur, date, e4, source, note) {
     return runTx_(user, { requestId: uid_('fx'), action: 'fx.store', payload: { cur: cur, date: date, e4: e4, source: source } }, function (tx) {
         var rows = tx.rows('FxRate'), same = rows.filter(function (r) { return r.currency === cur && r.rateDate === date && r.source === source && r.isDeleted !== 1; })[0], row;
         if (same)
-            row = tx.update('FxRate', same.id, { rateE4: e4, note: note || same.note });
+            row = tx.update('FxRate', same.id, { rateE4: e4, buyE4: e4, sellE4: e4, note: note || same.note });
         else
-            row = tx.insert('FxRate', { rateDate: date, currency: cur, rateE4: e4, source: source, note: note || '' });
+            row = tx.insert('FxRate', { rateDate: date, currency: cur, rateE4: e4, buyE4: e4, sellE4: e4, source: source, note: note || '' });
         return { result: { id: row.id }, audit: [{ entityType: 'FxRate', entityId: row.id, action: 'fx.' + source.toLowerCase(), diff: { currency: cur, date: date, rate: fxText_(e4) } }] };
     });
 }
@@ -6134,7 +6137,7 @@ function fxList_(user, req) {
     var p = req.payload || {}, rows = repoValid_('FxRate').filter(function (r) { return (!p.currency || r.currency === p.currency) && (!p.from || r.rateDate >= p.from) && (!p.to || r.rateDate <= p.to); });
     rows.sort(function (a, b) { return a.rateDate < b.rateDate ? 1 : a.rateDate > b.rateDate ? -1 : (a.source < b.source ? -1 : 1); });
     var total = rows.length, size = Math.min(Math.max(Number(p.pageSize) || 100, 1), 500), page = Math.max(Number(p.page) || 1, 1);
-    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, buy: r.buyE4 > 0 ? fxText_(r.buyE4) : '', sell: r.sellE4 > 0 ? fxText_(r.sellE4) : '', source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
+    return { total: total, items: rows.slice((page - 1) * size, page * size).map(function (r) { return { id: r.id, rateDate: r.rateDate, currency: r.currency, rate: fxText_(r.rateE4), rateE4: r.rateE4, buy: fxText_(fxSide_(r, 'BUY').basis === 'BUY' ? fxSide_(r, 'BUY').e4 : 0), sell: fxText_(fxSide_(r, 'SELL').basis === 'SELL' ? fxSide_(r, 'SELL').e4 : 0), source: r.source, note: r.note, createdBy: r.createdBy, version: r.version }; }) };
 }
 function fxSave_(user, req) {
     requirePerm_(user, 'fx.write');

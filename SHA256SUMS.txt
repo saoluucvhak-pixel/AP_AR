@@ -15,7 +15,7 @@ ae0e4e906b2569c1cd31e5bf60608e55d82e6a56e75a9c1aaf3b1873ae217078  ./1/so_quy_tie
 abcffe157f7e77fa37766edcfe447bb7350917da34d00d55c1c5bbdca14cf95f  ./1/thu_ho_chi_ho_danh_sach.png
 3af3d05e5ff14241a05b3613070c13092b55d17823264d6f4af3616de2e46a2e  ./1/thu_ho_chi_ho_tab_don.png
 4a3e96ffb0243fc92565cc4dda99d1d55b3de59eb8edb7954b5f198c0d9fe5c7  ./1/tong_quan.png
-e99518cf6e7453add6749e2479345d27cdc7937ae1ec7efd0798837a570723ef  ./1_BACKEND/Backend.gs
+f00d206fff4d6789a50ae83e8fe6479667f191f55217cdb008bde209f658f73d  ./1_BACKEND/Backend.gs
 3ecc0cadaf9dfc8aa9727be3b7b542b20301ad311c8ff23ac6d8dffb62745f50  ./2_GATEWAY/Gateway.gs
 3cc4dc3e5c0f989780cdc3977b2dd59f2228050de3a13658771f3adcc01104cd  ./2_GATEWAY/index.html
 fd2374ed194cf3ce00204ecca12800fbea82fe7f950761a5c5d32e7ebcbb2c21  ./2_GATEWAY/luong-nghiep-vu.html
@@ -104,7 +104,7 @@ ac7c0a5ac24ad003aabb798e9a6384c35286cdd29dbc88cf8de28bb2aae764ff  ./4_TESTS/r35-
 b77d5916cdf77ea0207c3e9e6e8ac6378c02f296ef57644f1836fb0ba6720b1d  ./4_TESTS/r36-advance.test.cjs
 183fab07f369b372db3cc4d9b992ebfe2a3d33976beb1e0d8ba04d6786115d87  ./4_TESTS/r36-order-options.test.cjs
 b38eac27f9fccf84f80e4557a5723829ae9c7ba58fdabaf74447987f7b033740  ./4_TESTS/r36-report-order-filter.test.cjs
-791395a080640ef2b73aad824efeda29a9e5a62741032a4dabca9f5bf1473faa  ./4_TESTS/r36-fx-rate-sides.test.cjs
+13a9c3e056a4c6efdd637dab47972f00126b5274ee15127f0e59b5220083f3c8  ./4_TESTS/r36-fx-rate-sides.test.cjs
 e7578c818fdec7e4f2ee7df0deea750e59244c4cb7fd111763dccdc8a41e3397  ./4_TESTS/r36-book-debt.test.cjs
 e36cb7ebd93f4045b6965e0d8f0b937ca76bde14443981439fa85ccde06ffe86  ./4_TESTS/readmodel.test.cjs
 a85c38990e98679e113a8b61f6eaaf4b7ac1b482a5abaa28cc2c7b19bb0aa3b2  ./4_TESTS/reject-perm.test.cjs
@@ -142,7 +142,7 @@ a0ff69cdaf887ec12b9ea1ce0858091f58ec480180a6748ee22ef904e3c43d9a  ./6_ANH_TRUOC_
 ced1b63ddf3d4527e5fb519bcf56761ef16a0a434fe08633a9cb070c11944a1c  ./6_ANH_TRUOC_SAU/truoc_1_menu_danh_sach.png
 a0ff69cdaf887ec12b9ea1ce0858091f58ec480180a6748ee22ef904e3c43d9a  ./6_ANH_TRUOC_SAU/truoc_2_form_dai.png
 987d60d22dfc6546abfb1a0a37b642726fcf2fb7f88bc4536f7bb2f921eb3a18  ./6_ANH_TRUOC_SAU/truoc_3_hop_thoai.png
-d690f040b9e53d4f424750e70fe6a7a4e2640e0d844bdf99eb3c7952e0d73951  ./6_NGUON/Backend.gs
+c5b40dfd989ce516cc04283a587515632f02e8ff003f2cdb4ffb1c91cff334df  ./6_NGUON/Backend.gs
 3ecc0cadaf9dfc8aa9727be3b7b542b20301ad311c8ff23ac6d8dffb62745f50  ./6_NGUON/Gateway.gs
 fa6a73f5d1e5c61bf5e18b8d507dac351e59583802bb2d050d46ab43907af156  ./6_NGUON/README.md
 0606982139460082c77a4fc2e5a8d41d30067393a7aa63ae1590e469bfb6398b  ./6_NGUON/build.py
@@ -179,7 +179,7 @@ c650be9aa7a10e1c52dce03cc2edaaaa0e88f176c7ae26421ab56426e283b123  ./7_MAU_BAO_CA
 77ddcfa596b017324c1fd1ba3c5daba1fbd69d45e67d17657e187aaa5429f31e  ./7_MAU_BAO_CAO/xem_truoc/R12W_mau_xem_truoc.xlsx
 4e4cc389d7e4970b0dfd29eeb06c287159f2f380a4452f33cceca71d8d71fb54  ./7_MAU_BAO_CAO/xem_truoc/R12_mau_xem_truoc.pdf
 a1468a34f443b89a53b7eb5e79c8e97ffa0f24e71bbee05e92601979964d9055  ./7_MAU_BAO_CAO/xem_truoc/R12_mau_xem_truoc.xlsx
-bfe13d4df5b81d5585ddb1099247738cfec68650b47c0a72e7e70a1af008ac97  ./AN_TOAN_KHI_DAN/Backend.gs
+14606ebc113ad840cc6edd3b26fedd792a88b0a333ed4bb82f7d52f68926c7d5  ./AN_TOAN_KHI_DAN/Backend.gs
 ea311063002ed0e29b9cb302369f6de9027c0ee81dc6b7c62808ad63bf8564ba  ./AN_TOAN_KHI_DAN/Gateway.gs
 adb870d3aca6f65013cf598853c476914cdddc81d21fe6fe504df77fa5fb7c43  ./AN_TOAN_KHI_DAN/index.html
 3b7e2a37340a179c82d2f0e9f6d389059882de2c2750431d37f73583893bf4d8  ./AN_TOAN_KHI_DAN/luong-nghiep-vu.html

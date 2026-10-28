@@ -24,4 +24,12 @@ suite('2. Tỷ giá mua/bán đã lưu được đánh giá lại dùng đúng c
   const rates=ctx.repoValid_('FxRate');const c=(s)=>{const r=ctx.fxClosing_('USD','2026-10-25',rates,s);return [r.e4,r.basis,r.rateDate]};
   eq(c('BUY'),[251500,'BUY','2026-10-20']);eq(c('SELL'),[252500,'SELL','2026-10-20']);eq(c('MID'),[252000,'MID','2026-10-20']);ok(ctx.fxUsesSides_('USD',rates));ok(!ctx.fxUsesSides_('EUR',rates));
 });
+suite('3. Tỷ giá Google Finance: mua = bán = tỷ giá chung (dòng mới ghi cả ba; dòng cũ chưa có cột mua/bán vẫn coi như vậy, không cảnh báo thiếu)',()=>{
+  const {ctx}=env();ctx.fxGoogle_=()=>({rateE4:252300,date:'2026-10-21'});
+  const r=call(ctx,U,'fx.fetch',{currency:'USD',rateDate:'2026-10-21'});ok(r.id,'đã lấy');
+  const row=ctx.repoValid_('FxRate').find(x=>x.id===r.id);eq([row.source,row.rateE4,row.buyE4,row.sellE4],['GOOGLE',252300,252300,252300]);
+  const old=[{currency:'USD',rateDate:'2026-10-21',rateE4:252300,source:'GOOGLE',buyE4:0,sellE4:0}];
+  eq([ctx.fxClosing_('USD','2026-10-25',old,'BUY').e4,ctx.fxClosing_('USD','2026-10-25',old,'SELL').basis],[252300,'SELL']);
+  const man=[{currency:'USD',rateDate:'2026-10-21',rateE4:252300,source:'MANUAL',buyE4:0,sellE4:0}];eq(ctx.fxClosing_('USD','2026-10-25',man,'BUY').basis,'MID','nhập tay không có mua/bán vẫn là tỷ giá chung');
+});
 console.log('Tổng kiểm tra:',steps);
