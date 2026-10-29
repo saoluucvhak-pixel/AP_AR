@@ -37,9 +37,26 @@ var EInvoiceXml = (function () {
     function path(n, p) { var cur = n; p.split('/').forEach(function (s) { cur = cur ? kid(cur, s) : null; }); return cur; }
     function num(s) { s = String(s === undefined || s === null ? '' : s).trim(); if (s === '')
         return null; var n = Number(s.replace(/,/g, '')); return isFinite(n) ? n : null; }
-    // Chuỗi số tiền ở dạng ứng dụng đọc được (VND: số nguyên; tiền khác: tối đa 2 số lẻ).
-    function moneyText(v, cur) { if (v === null)
-        return ''; var dec = cur && cur !== 'VND' ? 2 : 0, r = Math.round(Math.abs(v) * Math.pow(10, dec)) / Math.pow(10, dec); return (v < 0 ? '-' : '') + (dec ? r.toFixed(2) : String(Math.round(r))); }
+    // Số tiền thập phân → đơn vị nhỏ nhất (số nguyên), làm tròn nửa lên TRÊN CHUỖI thập phân (không nhân số thực: 1,005 → 101 chứ không phải 100).
+    function toMinor(v, decimals) {
+        if (v === null || v === undefined || typeof v !== 'number' || !isFinite(v))
+            return null;
+        var d = Number.isInteger(decimals) && decimals >= 0 && decimals <= 6 ? decimals : 2, s = Math.abs(v).toString();
+        if (/e/i.test(s))
+            s = Math.abs(v).toFixed(10);
+        var p = s.split('.'), fp = p[1] || '', n = Number(p[0] + fp.slice(0, d).padEnd(d, '0')) + (fp.charAt(d) >= '5' ? 1 : 0);
+        return Number.isSafeInteger(n) ? (v < 0 ? -n : n) : null;
+    }
+    // Chuỗi số tiền ở dạng ứng dụng đọc được (số lẻ theo danh mục tiền tệ nếu truyền decimals; mặc định VND 0, tiền khác 2).
+    function moneyText(v, cur, decimals) {
+        if (v === null)
+            return '';
+        var d = Number.isInteger(decimals) ? decimals : (cur && cur !== 'VND' ? 2 : 0), n = toMinor(v, d);
+        if (n === null)
+            return '';
+        var digits = String(Math.abs(n)).padStart(d + 1, '0');
+        return (n < 0 ? '-' : '') + (d ? digits.slice(0, -d) + '.' + digits.slice(-d) : digits);
+    }
     function vatOf(ts) {
         var t = String(ts || '').trim().toUpperCase().replace(/\s+/g, '');
         if (!t)
@@ -89,5 +106,5 @@ var EInvoiceXml = (function () {
             warnings.push('Hóa đơn có dòng chiết khấu thương mại (số âm): ứng dụng chưa nhập được dòng âm — hãy bỏ dòng này và nhập lại số tiền đã trừ chiết khấu, hoặc xử lý bằng điều chỉnh.');
         return { ok: true, warnings: warnings, invoice: { form: txt(tc, 'KHMSHDon'), serial: txt(tc, 'KHHDon'), number: txt(tc, 'SHDon'), date: date.slice(0, 10), currency: cur, rate: num(txt(tc, 'TGia')), seller: party(kid(nd, 'NBan')), buyer: party(kid(nd, 'NMua')), lines: lines, totals: totals, mccqt: txt(hd, 'MCCQT'), type: txt(tc, 'THDon') } };
     }
-    return { parse: parse, parseXml: parseXml, vatOf: vatOf, moneyText: moneyText };
+    return { parse: parse, parseXml: parseXml, vatOf: vatOf, moneyText: moneyText, toMinor: toMinor };
 })();

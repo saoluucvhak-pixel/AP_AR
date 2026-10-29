@@ -927,6 +927,25 @@ await suite('52. Bộ nhớ đệm phía trình duyệt: quay lại màn danh s�
   await go(pg,'#/orders',500);const n2=n('doc.list');await go(pg,'#/docs/AR',900);ok(n('doc.list')>n2,'sau khi xóa đệm phải đọc lại máy chủ');
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('53. Ô tỷ giá đọc cả 25.438,5 lẫn 25,438.5 và báo lỗi ngay khi gõ sai; tỷ giá lệch nhiều phải xác nhận rồi mới lưu; phần trăm dùng dấu phẩy',async()=>{
+  const w=build();w.T.FxRate=w.T.FxRate||[];w.T.FxRate.push({id:'fxh',rateDate:'2026-10-20',currency:'USD',rateE4:254385000,source:'MANUAL',version:1,isDeleted:0});
+  const {pg,errs,calls}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});
+  await go(pg,'#/doc/new?dir=AR',900);await pg.locator('[data-path=currency]').selectOption('USD');await pg.waitForTimeout(300);
+  const inp=pg.locator('[data-path=fxRate]'),box=inp.locator('xpath=ancestor::div[contains(@class,"field")][1]');
+  await inp.fill('abc');ok(/số dương/.test(await box.locator('.errmsg').innerText()),'gõ sai hiện lỗi ngay');
+  await inp.fill('25,438.5');eq(await box.locator('.errmsg:not([hidden])').count(),0,'kiểu Mỹ hợp lệ, hết lỗi');eq(await pg.evaluate(()=>[parseRate('25,438.5'),parseRate('25.438,5'),parseRate('25.438')]),['25438.5','25438.5','25438']);
+  const tx=await pg.locator('[data-form-book]').innerText();ok(/25\.438,5/.test(tx)||/25\.438/.test(tx),'dòng quy đổi dùng đúng tỷ giá: '+tx);
+  eq(await pg.evaluate(()=>[fmtPct(12.5),fmtPct(8),fmtPct(33.33)]),['12,5%','8%','33,33%']);
+  // xác nhận tỷ giá lệch nhiều
+  await pg.evaluate(()=>{window.__cf=[];window.confirm=m=>{__cf.push(m);return false}});
+  let rej='';try{await pg.evaluate(()=>apiFx('fx.save',{currency:'USD',rateDate:'2026-10-26',rate:'25.4385',buy:'',sell:'',note:''},{write:true}))}catch(e){rej=String(e)}
+  eq(await pg.evaluate(()=>__cf.length),1,'hỏi xác nhận một lần');ok(/lệch/.test(await pg.evaluate(()=>__cf[0])),'nội dung nêu độ lệch');ok(rej!=='','từ chối thì báo lỗi');eq(w.T.FxRate.length,1,'không ghi tỷ giá sai');
+  await pg.evaluate(()=>{window.confirm=m=>{__cf.push(m);return true}});
+  const res=await pg.evaluate(()=>apiFx('fx.save',{currency:'USD',rateDate:'2026-10-26',rate:'25.4385',buy:'',sell:'',note:''},{write:true}));ok(res&&res.id,'đồng ý thì lưu');eq(w.T.FxRate.length,2);eq(w.T.FxRate[1].rateE4,254385);
+  eq(calls.filter(c=>c.action==='fx.save').map(c=>!!c.payload.fxConfirm),[false,false,true],'lần gửi lại mới mang fxConfirm');
+  const bad=await pg.evaluate(()=>apiFx('fx.save',{currency:'USD',rateDate:'2026-10-24',rate:'0.01',buy:'',sell:'',note:''},{write:true}).then(()=>'OK',e=>(e.fields&&e.fields[0]&&e.fields[0].code)||String(e)));eq(bad,'FX_OUT_OF_RANGE','ngoài khoảng tuyệt đối: không có đường xác nhận');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

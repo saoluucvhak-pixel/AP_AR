@@ -3013,7 +3013,7 @@ function resolveLineRefs_(tx, rawLines, lines, group, partnerId, direction) {
 function docSave_(user, req) {
     requirePerm_(user, 'doc.write');
     var p = req.payload, prior = p && p.id ? repoFind_('DebtDoc', p.id) : null, fxCur = p && (p.currency || (prior && prior.currency)), fxDate = p && (p.docDate || (prior && prior.docDate));
-    var fxp = (p && currencyMap_()[fxCur] && isDate_(fxDate) && fxDate >= ledgerStart_()) ? fxResolve_(user, fxCur, fxDate, p.fxRate) : null;
+    var fxp = (p && currencyMap_()[fxCur] && isDate_(fxDate) && fxDate >= ledgerStart_()) ? fxResolve_(user, fxCur, fxDate, p.fxRate, p.fxConfirm) : null;
     return runTx_(user, { requestId: req.requestId, action: 'doc.save', payload: p, failAt: req.failAt }, function (tx) {
         var env = docEnv_(tx, p.partnerId, user), existing = p.id ? tx.find('DebtDoc', p.id) : null;
         if (p.id && !existing)
@@ -6022,6 +6022,9 @@ function fxE4_(v) {
     var p = s.split('.'), n = Number(p[0]) * 10000 + Number((p[1] || '').padEnd(4, '0'));
     return n > 0 && Number.isSafeInteger(n) ? n : 0;
 }
+// Phần trăm theo định dạng Việt Nam: bp = điểm cơ bản (800 → "8%"), pctNum = số phần trăm (12.5 → "12,5%").
+function fmtBp_(bp) { return Number.isSafeInteger(bp) ? formatMinorVn_(bp, 2).replace(/,?0+$/, '') + '%' : ''; }
+function fmtPctNum_(p) { return typeof p === 'number' && isFinite(p) ? formatMinorVn_(Math.round(p * 100), 2).replace(/,?0+$/, '') + '%' : '—'; }
 function fxText_(e4) { return e4 > 0 ? formatMinorVn_(e4, 4).replace(/,?0+$/, '') : ''; }
 function fxToBase_(minor, dec, e4) {
     var num = BigInt(minor) * BigInt(e4), den = BigInt(10000) * BigInt(Math.pow(10, dec)), neg = num < BigInt(0), a = neg ? -num : num, q = (a * BigInt(2) + den) / (den * BigInt(2)), r = Number(neg ? -q : q);
@@ -6123,13 +6126,31 @@ function fxStore_(user, cur, date, e4, source, note) {
     });
 }
 // Xác định tỷ giá của một ngày: nhập tay trên phiếu > bảng tỷ giá (nhập tay trước, Google sau) > tự lấy Google Finance > báo thiếu. Gọi TRƯỚC khi mở giao dịch ghi sổ (có thể ghi bảng tỷ giá).
-function fxResolve_(user, cur, date, manual) {
+// Giới hạn hợp lý của tỷ giá nhập tay: tuyệt đối [0,1 ; 50.000.000] VND/đơn vị ngoại tệ (không vượt được); tương đối ±30% so với tỷ giá gần nhất đã có (vượt thì phải xác nhận).
+var FX_ABS_MIN_E4_ = 1000, FX_ABS_MAX_E4_ = 500000000000, FX_DEV_PCT_ = 30;
+function fxPlausible_(cur, date, e4, confirm, path) {
+    if (e4 < FX_ABS_MIN_E4_ || e4 > FX_ABS_MAX_E4_)
+        throw err_('VALIDATION_FAILED', 'Tỷ giá ngoài khoảng hợp lý.', [{ path: path, code: 'FX_OUT_OF_RANGE', message: 'Tỷ giá phải từ 0,1 đến 50.000.000 ' + BASE_CUR_ + ' cho 1 ' + cur + '. Kiểm tra dấu chấm/phẩy (ví dụ 25.438,5).' }]);
+    var ref = fxNearest_(cur, date), anyRows = null;
+    if (!ref) {
+        repoValid_('FxRate').forEach(function (r) { if (r.currency === cur && r.rateE4 > 0 && (!anyRows || r.rateDate > anyRows.rateDate))
+            anyRows = r; });
+        ref = anyRows;
+    }
+    if (!ref || confirm === true)
+        return;
+    var dev = Math.abs(e4 - ref.rateE4) * 100 / ref.rateE4;
+    if (dev > FX_DEV_PCT_)
+        throw err_('VALIDATION_FAILED', 'Tỷ giá lệch nhiều so với tỷ giá gần nhất.', [{ path: path, code: 'FX_IMPLAUSIBLE', message: 'Tỷ giá ' + fxText_(e4) + ' lệch ' + fmtPctNum_(Math.round(dev * 10) / 10) + ' so với tỷ giá gần nhất ' + fxText_(ref.rateE4) + ' (ngày ' + rptDateVn_(ref.rateDate) + '). Nếu đúng, xác nhận để lưu.' }]);
+}
+function fxResolve_(user, cur, date, manual, confirm) {
     if (!cur || cur === BASE_CUR_ || !isDate_(date))
         return null;
     if (manual !== undefined && manual !== null && String(manual).trim() !== '') {
         var m = fxE4_(manual);
         if (!m)
             throw err_('VALIDATION_FAILED', 'Tỷ giá không hợp lệ.', [{ path: 'fxRate', code: 'FX_INVALID', message: 'Nhập tỷ giá dạng số dương, tối đa 4 số lẻ.' }]);
+        fxPlausible_(cur, date, m, confirm, 'fxRate');
         if (!fxFind_(cur, date))
             fxStore_(user, cur, date, m, 'MANUAL', 'Nhập trên chứng từ');
         return { cur: cur, date: date, e4: m, source: 'MANUAL' };
@@ -6169,6 +6190,9 @@ function fxSave_(user, req) {
         errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua không được lớn hơn tỷ giá bán.' });
     if (errs.length)
         throw err_('VALIDATION_FAILED', 'Dữ liệu chưa hợp lệ', errs);
+    fxPlausible_(p.currency, p.rateDate, e4, p.fxConfirm, 'rate');
+    [['buy', buy4], ['sell', sell4]].forEach(function (x) { if (x[1])
+        fxPlausible_(p.currency, p.rateDate, x[1], p.fxConfirm, x[0]); });
     return runTx_(user, { requestId: req.requestId, action: 'fx.save', payload: p, failAt: req.failAt }, function (tx) {
         var same = tx.rows('FxRate').filter(function (r) { return r.currency === p.currency && r.rateDate === p.rateDate && r.source === 'MANUAL' && r.isDeleted !== 1; })[0], row;
         if (same)
@@ -7700,7 +7724,7 @@ function paymentGet_(user, req) {
 }
 function paymentSave_(user, req) {
     requirePerm_(user, 'payment.write');
-    var p = req.payload, fxp = (p && currencyMap_()[p.currency] && isDate_(p.effectiveDate) && p.effectiveDate >= ledgerStart_()) ? fxResolve_(user, p.currency, p.effectiveDate, p.fxRate) : null;
+    var p = req.payload, fxp = (p && currencyMap_()[p.currency] && isDate_(p.effectiveDate) && p.effectiveDate >= ledgerStart_()) ? fxResolve_(user, p.currency, p.effectiveDate, p.fxRate, p.fxConfirm) : null;
     return runTx_(user, { requestId: req.requestId, action: 'payment.save', payload: p, failAt: req.failAt }, function (tx) {
         var errs = [];
         function E(path, code, msg) { errs.push({ path: path, code: code, message: msg }); }
@@ -8143,7 +8167,6 @@ function periodReopenConfirm_(user, req) {
 }
 function rcNum_(v) { return typeof v === 'number' && isFinite(v) ? v : (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null); }
 function rcStr_(v) { return v === null || v === undefined ? '' : String(v).trim(); }
-function rcMinor_(v, cur) { return cur === 'USD' ? Math.round(v * 100) : Math.round(v); }
 function rcIsTotal_(s) { return /^(t[oổ]ng|c[oộ]ng)/i.test(normText_(s).replace(/^(\w)/, '$1')) || /^t[ổo]ng/i.test(String(s).trim().toLowerCase()); }
 /* Khóa so khớp: bỏ dấu, chữ hoa/thường, khoảng trắng và dấu phân cách; số thuần túy bỏ số 0 đầu. */
 function rcKey_(s) {
@@ -8702,7 +8725,7 @@ function rep05_(user, code, params) {
             var pass = l.isPassThrough ? l.grossMinor : 0, svcNet = l.isPassThrough ? 0 : l.netMinor, vat = l.isPassThrough ? 0 : l.vatMinor;
             if (l.vatMode === 'UNCONFIRMED' && !l.isPassThrough)
                 blockers[l.id] = 1;
-            var rate = l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : l.vatMode === 'NONE' ? 'KCT' : '?';
+            var rate = l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : l.vatMode === 'NONE' ? 'KCT' : '?';
             addRow_(rep, 'data', { stt: i === 0 ? n : '', decl: i === 0 && r ? r.refValue : '', declDate: i === 0 && r ? r.refDate : '', desc: l.description, qty: i === 0 && l.containerQty !== null ? l.containerQty : (l.containerQty === null ? '' : l.containerQty),
                 net: svcNet, rate: rate, vat: vat, svc: svcNet + vat, pass: pass, total: svcNet + vat + pass, lot: l.lotNote }, cur);
             T.qty += l.containerQty || 0;
@@ -8715,7 +8738,7 @@ function rep05_(user, code, params) {
     });
     adjLines.forEach(function (l) {
         var ad = dset[l.docId], pass = l.isPassThrough ? l.grossMinor : 0, svcNet = l.isPassThrough ? 0 : l.netMinor, vat = l.isPassThrough ? 0 : l.vatMinor;
-        addRow_(rep, 'data', { stt: '', decl: '', declDate: docEffDate_(ad), desc: (ad.docType === 'REVERSAL' ? 'Đảo ' : 'Điều chỉnh ') + (ad.docNo || '') + ': ' + l.description, qty: '', net: svcNet, rate: l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : 'KCT', vat: vat,
+        addRow_(rep, 'data', { stt: '', decl: '', declDate: docEffDate_(ad), desc: (ad.docType === 'REVERSAL' ? 'Đảo ' : 'Điều chỉnh ') + (ad.docNo || '') + ': ' + l.description, qty: '', net: svcNet, rate: l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : 'KCT', vat: vat,
             svc: svcNet + vat, pass: pass, total: svcNet + vat + pass, lot: l.lotNote || '' }, cur);
         T.net += svcNet;
         T.vat += vat;
@@ -9043,10 +9066,10 @@ function repVat_(user, code, params, dir) {
             var rate = l.vatMode === 'EXCLUSIVE' ? l.vatRateBp : 'KCT';
             row.net = cv(l.netMinor);
             row.vat = l.vatMode === 'EXCLUSIVE' ? cv(l.vatMinor) : 0;
-            row.rate = l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : 'KCT';
+            row.rate = l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : 'KCT';
             if (row.vat && !p.taxCode)
                 cnt.noTax++;
-            (buckets[rate] = buckets[rate] || { rate: rate, label: rate === 'KCT' ? 'Hàng hóa, dịch vụ không chịu thuế GTGT' : 'Hàng hóa, dịch vụ chịu thuế suất ' + (rate / 100) + '%', rows: [] }).rows.push(row);
+            (buckets[rate] = buckets[rate] || { rate: rate, label: rate === 'KCT' ? 'Hàng hóa, dịch vụ không chịu thuế GTGT' : 'Hàng hóa, dịch vụ chịu thuế suất ' + fmtBp_(rate), rows: [] }).rows.push(row);
         });
     });
     var keys = Object.keys(buckets).sort(function (a, b) { return (a === 'KCT' ? 1e9 : Number(a)) - (b === 'KCT' ? 1e9 : Number(b)); }), n = 0, T = { net: 0, vat: 0 };
@@ -9055,7 +9078,7 @@ function repVat_(user, code, params, dir) {
         var b = buckets[k], s = { net: 0, vat: 0 };
         addRow_(rep, 'group', { stt: b.label }, 'VND');
         sortRows(b.rows).forEach(function (r) { r.stt = ++n; addRow_(rep, 'data', r, 'VND'); s.net += r.net; s.vat += r.vat; });
-        addRow_(rep, 'subtotal', { desc: 'Cộng ' + (k === 'KCT' ? 'không chịu thuế' : 'thuế suất ' + (k / 100) + '%'), net: s.net, vat: s.vat }, 'VND');
+        addRow_(rep, 'subtotal', { desc: 'Cộng ' + (k === 'KCT' ? 'không chịu thuế' : 'thuế suất ' + fmtBp_(Number(k))), net: s.net, vat: s.vat }, 'VND');
         T.net += s.net;
         T.vat += s.vat;
     });
@@ -9346,7 +9369,7 @@ function rep09_(user, code, params) {
             parts.push('số hộ chưa đối ứng');
         return parts.length ? 'Lãi gộp theo khoản đã ghi nhận – ' + parts.join('; ') : 'Đủ dữ liệu';
     }
-    function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? Math.round((e.rev - e.cost) * 10000 / e.rev) / 100 + '%' : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
+    function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? fmtPctNum_(Math.round((e.rev - e.cost) * 10000 / e.rev) / 100) : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
     if (params.orderId || qOrder) {
         var fo = params.orderId ? D.orders.filter(function (x) { return x.id === params.orderId; })[0] : null;
         rep.meta.order = params.orderId ? (fo ? fo.orderNo + (fo.poNo ? ' · PO ' + fo.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
