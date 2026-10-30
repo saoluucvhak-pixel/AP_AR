@@ -17,3 +17,6 @@ Mỗi lần sửa lỗi nên thêm một ca vào `reject.regression.test.cjs` (�
 - `cache.test.cjs` — cache đọc: ấm = nguội, ghi làm mất hiệu lực, gộp getAll.
 - `bench/perf.bench.cjs` — đo trên giả lập: `node 4_TESTS/bench/perf.bench.cjs <Backend_cũ.gs>`.
 - Giao diện: `node 5_UI_TESTS/ui.e2e.cjs` (Playwright, Backend thật + Sheet giả).
+
+- `fix14.test.cjs` — hồi quy 6 lỗi định dạng số / tỷ giá / nhập XML (báo cáo kiểm tra 29/10/2026): đọc ô tỷ giá kiểu Mỹ `25,438.5`; kiểm tra tỷ giá hợp lý ở máy chủ (±30% phải xác nhận, ngoài [0,1 ; 50 triệu] không cho); làm tròn tiền XML nửa lên trên chuỗi thập phân (so với BigInt, 30.000 ca ngẫu nhiên); phần trăm dấu phẩy ở máy chủ và giao diện; `fmtMoney` không ném lỗi; giờ theo Asia/Ho_Chi_Minh; xóa `rcMinor_` chết. Chạy bản cũ: `BACKEND_SRC= GATEWAY_SRC= EINVOICE_SRC= node 4_TESTS/fix14.test.cjs` — cả 8 nhóm phải hỏng trên bản cũ.
+- `5_UI_TESTS/ui.e2e.cjs` nhóm 53 — ô tỷ giá, hộp xác nhận tỷ giá lệch (từ chối → không ghi; đồng ý → gửi lại với `fxConfirm`), phần trăm.

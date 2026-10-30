@@ -459,7 +459,7 @@ function draftAttach(root, opt) {
         if (!it || !root.isConnected)
             return;
         var note = h('div', { class: 'msg warn', 'data-draft-found': it.id });
-        note.appendChild(h('span', null, '📝 Có bản nháp chưa lưu (cập nhật ' + new Date(it.updatedAt).toLocaleString('vi-VN') + (r.items.length > 1 ? '; còn ' + (r.items.length - 1) + ' bản khác trong "Bản nháp của tôi"' : '') + '). ' + (it.stale ? 'Bản ghi gốc đã thay đổi sau khi tạo nháp — kiểm tra kỹ trước khi lưu. ' : '')));
+        note.appendChild(h('span', null, '📝 Có bản nháp chưa lưu (cập nhật ' + fmtTime(it.updatedAt) + (r.items.length > 1 ? '; còn ' + (r.items.length - 1) + ' bản khác trong "Bản nháp của tôi"' : '') + '). ' + (it.stale ? 'Bản ghi gốc đã thay đổi sau khi tạo nháp — kiểm tra kỹ trước khi lưu. ' : '')));
         note.appendChild(h('button', { class: 'sm', type: 'button', 'data-draft-restore': '1', onclick: async function () {
                 try {
                     var d = await api('draft.get', { id: it.id });
@@ -564,8 +564,17 @@ function fmtMoney(minor, cur) {
         return '—';
     if (typeof minor !== 'number')
         return String(minor);
-    return formatMinorVn_(minor, curInfo(cur).decimals);
+    try {
+        return formatMinorVn_(minor, curInfo(cur).decimals);
+    }
+    catch (e) {
+        if (window.console && console.warn)
+            console.warn('fmtMoney: giá trị không hợp lệ', minor, cur);
+        return '—';
+    }
 }
+
+function fmtPct(p) { return typeof p === 'number' && isFinite(p) ? formatMinorVn_(Math.round(p * 100), 2).replace(/,?0+$/, '') + '%' : '—'; }
 function parseMoney(str, cur) {
     str = String(str === undefined || str === null ? '' : str).trim();
     if (!str)
@@ -597,14 +606,36 @@ function parseMoney(str, cur) {
     return Number.isSafeInteger(value) ? (neg ? -value : value) : NaN;
 }
 function fxText(e4) { return e4 > 0 ? formatMinorVn_(e4, 4).replace(/,?0+$/, '') : ''; }
+
+function rateProblem(s) {
+    s = String(s || '').replace(/\s/g, '');
+    return !s || parseRate(s) !== 'x' ? '' : 'Tỷ giá phải là số dương, tối đa 4 số lẻ (ví dụ 25.438,5).';
+}
 function parseRate(s) {
     s = String(s || '').replace(/\s/g, '');
     if (!s)
         return '';
-    if (s.indexOf(',') >= 0)
-        s = s.replace(/\./g, '').replace(',', '.');
-    else if (/^\d{1,3}(\.\d{3})+$/.test(s))
-        s = s.replace(/\./g, '');
+    var d = s.lastIndexOf('.'), c = s.lastIndexOf(','), dec = null;
+    if (d >= 0 && c >= 0)
+        dec = d > c ? '.' : ',';
+    else if (c >= 0)
+        dec = s.split(',').length === 2 ? ',' : null;
+    else if (d >= 0)
+        dec = s.split('.').length === 2 && !/^\d{1,3}\.\d{3}$/.test(s) ? '.' : null;
+    var ip = s, fp = '';
+    if (dec) {
+        var parts = s.split(dec);
+        if (parts.length !== 2)
+            return 'x';
+        ip = parts[0];
+        fp = parts[1];
+    }
+    if (!/^\d+$/.test(ip)) {
+        if (!/^\d{1,3}([.,]\d{3})+$/.test(ip) || (ip.indexOf('.') >= 0 && ip.indexOf(',') >= 0))
+            return 'x';
+        ip = ip.replace(/[.,]/g, '');
+    }
+    s = fp ? ip + '.' + fp : ip;
     return /^\d{1,9}(\.\d{1,4})?$/.test(s) ? s : 'x';
 }
 function fxSrcName(x) { return x === 'MANUAL' ? 'nhập tay' : x === 'MOVING_AVG' ? 'bình quân di động của quỹ' : 'Google Finance'; }
@@ -615,6 +646,9 @@ function fxField(curSel, current, srcText) {
     curSel.addEventListener('change', sync);
     sync();
     inp.getRate = function () { var r = parseRate(inp.value); return r === 'x' ? 'x' : r; };
+    var rateMsg = h('div', { class: 'errmsg', role: 'alert', hidden: true });
+    f.appendChild(rateMsg);
+    inp.addEventListener('input', function () { var p = rateProblem(inp.value); rateMsg.textContent = p; rateMsg.hidden = !p; inp.classList.toggle('err', !!p); });
     inp.field = f;
     return inp;
 }
@@ -743,6 +777,18 @@ function api(action, payload, opt) {
         delete READ_INFLIGHT[key]; };
     p.then(done, done);
     return p;
+}
+
+async function apiFx(action, payload, opt) {
+    try {
+        return await api(action, payload, opt);
+    }
+    catch (e) {
+        var f = e && e.fields && e.fields.filter(function (x) { return x.code === 'FX_IMPLAUSIBLE'; })[0];
+        if (!f || !window.confirm(f.message))
+            throw e;
+        return api(action, Object.assign({}, payload, { fxConfirm: true }), Object.assign({}, opt, { requestId: uuid() }));
+    }
 }
 async function apiRun(action, payload, opt) {
     var write = !!opt.write, requestId = opt.requestId || uuid(), env = { action: action, payload: payload === undefined ? {} : payload, requestId: requestId }, t0 = performance.now(), maxRetry = write ? 3 : 2;
@@ -2710,8 +2756,25 @@ var EInvoiceXml = (function () {
     function num(s) { s = String(s === undefined || s === null ? '' : s).trim(); if (s === '')
         return null; var n = Number(s.replace(/,/g, '')); return isFinite(n) ? n : null; }
 
-    function moneyText(v, cur) { if (v === null)
-        return ''; var dec = cur && cur !== 'VND' ? 2 : 0, r = Math.round(Math.abs(v) * Math.pow(10, dec)) / Math.pow(10, dec); return (v < 0 ? '-' : '') + (dec ? r.toFixed(2) : String(Math.round(r))); }
+    function toMinor(v, decimals) {
+        if (v === null || v === undefined || typeof v !== 'number' || !isFinite(v))
+            return null;
+        var d = Number.isInteger(decimals) && decimals >= 0 && decimals <= 6 ? decimals : 2, s = Math.abs(v).toString();
+        if (/e/i.test(s))
+            s = Math.abs(v).toFixed(10);
+        var p = s.split('.'), fp = p[1] || '', n = Number(p[0] + fp.slice(0, d).padEnd(d, '0')) + (fp.charAt(d) >= '5' ? 1 : 0);
+        return Number.isSafeInteger(n) ? (v < 0 ? -n : n) : null;
+    }
+
+    function moneyText(v, cur, decimals) {
+        if (v === null)
+            return '';
+        var d = Number.isInteger(decimals) ? decimals : (cur && cur !== 'VND' ? 2 : 0), n = toMinor(v, d);
+        if (n === null)
+            return '';
+        var digits = String(Math.abs(n)).padStart(d + 1, '0');
+        return (n < 0 ? '-' : '') + (d ? digits.slice(0, -d) + '.' + digits.slice(-d) : digits);
+    }
     function vatOf(ts) {
         var t = String(ts || '').trim().toUpperCase().replace(/\s+/g, '');
         if (!t)
@@ -2761,7 +2824,7 @@ var EInvoiceXml = (function () {
             warnings.push('Hóa đơn có dòng chiết khấu thương mại (số âm): ứng dụng chưa nhập được dòng âm — hãy bỏ dòng này và nhập lại số tiền đã trừ chiết khấu, hoặc xử lý bằng điều chỉnh.');
         return { ok: true, warnings: warnings, invoice: { form: txt(tc, 'KHMSHDon'), serial: txt(tc, 'KHHDon'), number: txt(tc, 'SHDon'), date: date.slice(0, 10), currency: cur, rate: num(txt(tc, 'TGia')), seller: party(kid(nd, 'NBan')), buyer: party(kid(nd, 'NMua')), lines: lines, totals: totals, mccqt: txt(hd, 'MCCQT'), type: txt(tc, 'THDon') } };
     }
-    return { parse: parse, parseXml: parseXml, vatOf: vatOf, moneyText: moneyText };
+    return { parse: parse, parseXml: parseXml, vatOf: vatOf, moneyText: moneyText, toMinor: toMinor };
 })();
 
 var XML_IMPORT = { files: [] };
@@ -3939,10 +4002,10 @@ VIEWS.order = async function (r) {
     root.appendChild(bar);
     root.appendChild(h('div', { class: 'card' }, h('div', { class: 'grid g4' }, kv('Khách hàng', o.customerName), kv('Ngày đơn', fmtDate(o.orderDate)), kv('Nhóm nghiệp vụ', o.group), kv('Mã dịch vụ / Số HSDV', (o.services || []).length ? h('div', null, o.services.map(function (x) { return h('div', null, x.code + ' · ' + (x.hsdvNo || '—') + (x.department ? ' · ' + x.department : '')); })) : '—')), o.note ? h('div', { class: 'hint' }, o.note) : null));
     var tc = Object.keys(o.totals);
-    root.appendChild(h('div', { class: 'card' }, h('h3', null, 'Doanh thu dịch vụ – chi phí dịch vụ – lãi gộp (chỉ khoản đã lập hóa đơn, trước thuế, không gồm thu hộ/chi hộ, từng tiền tệ riêng)'), tc.length ? tc.map(function (c) { var t = o.totals[c]; return h('div', { class: 'grid g4', style: 'margin-bottom:8px' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Doanh thu dịch vụ ' + c), h('div', { class: 'v' }, fmtMoney(t.revenueNet, c))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Chi phí dịch vụ ' + c), h('div', { class: 'v' }, fmtMoney(t.costNet, c))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Lãi gộp ' + c), h('div', { class: 'v', style: t.margin < 0 ? 'color:var(--danger)' : '' }, fmtMoney(t.margin, c) + (t.marginPct === null ? '' : ' (' + t.marginPct + '%)'))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Chưa lập hóa đơn'), h('div', { class: 's' }, 'Doanh thu ' + fmtMoney(t.uninvoicedRevenue, c) + ' · Chi phí ' + fmtMoney(t.uninvoicedCost, c))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Đang lập hóa đơn'), h('div', { class: 's' }, 'Doanh thu ' + fmtMoney(t.invoicingRevenue, c) + ' · Chi phí ' + fmtMoney(t.invoicingCost, c))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Chi hộ / thu hộ (không tính lãi gộp)'), h('div', { class: 's' }, 'Chi hộ (thu lại của khách) ' + fmtMoney(t.passRevenue, c) + ' · Thu hộ (trả lại khách) ' + fmtMoney(t.passCost, c) + ' · Chênh lệch chi hộ − thu hộ ' + fmtMoney(t.passGap, c)))); }) : h('div', { class: 'hint' }, 'Chưa có khoản phát sinh. Thêm doanh thu và chi phí bên dưới.')));
+    root.appendChild(h('div', { class: 'card' }, h('h3', null, 'Doanh thu dịch vụ – chi phí dịch vụ – lãi gộp (chỉ khoản đã lập hóa đơn, trước thuế, không gồm thu hộ/chi hộ, từng tiền tệ riêng)'), tc.length ? tc.map(function (c) { var t = o.totals[c]; return h('div', { class: 'grid g4', style: 'margin-bottom:8px' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Doanh thu dịch vụ ' + c), h('div', { class: 'v' }, fmtMoney(t.revenueNet, c))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Chi phí dịch vụ ' + c), h('div', { class: 'v' }, fmtMoney(t.costNet, c))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Lãi gộp ' + c), h('div', { class: 'v', style: t.margin < 0 ? 'color:var(--danger)' : '' }, fmtMoney(t.margin, c) + (t.marginPct === null ? '' : ' (' + fmtPct(t.marginPct) + ')'))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Chưa lập hóa đơn'), h('div', { class: 's' }, 'Doanh thu ' + fmtMoney(t.uninvoicedRevenue, c) + ' · Chi phí ' + fmtMoney(t.uninvoicedCost, c))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Đang lập hóa đơn'), h('div', { class: 's' }, 'Doanh thu ' + fmtMoney(t.invoicingRevenue, c) + ' · Chi phí ' + fmtMoney(t.invoicingCost, c))), h('div', { class: 'kpi', style: 'cursor:default' }, h('div', { class: 'l' }, 'Chi hộ / thu hộ (không tính lãi gộp)'), h('div', { class: 's' }, 'Chi hộ (thu lại của khách) ' + fmtMoney(t.passRevenue, c) + ' · Thu hộ (trả lại khách) ' + fmtMoney(t.passCost, c) + ' · Chênh lệch chi hộ − thu hộ ' + fmtMoney(t.passGap, c)))); }) : h('div', { class: 'hint' }, 'Chưa có khoản phát sinh. Thêm doanh thu và chi phí bên dưới.')));
     if (o.baseTotals && tc.some(function (c) { return c !== o.baseTotals.currency; })) {
         var bt = o.baseTotals, bc = o.baseTotals.currency, rates = Object.keys(bt.byCurrency).filter(function (c) { return c !== bc && bt.byCurrency[c].avgRate; }).map(function (c) { return c + ' bình quân ' + bt.byCurrency[c].avgRate.toLocaleString('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + bc; });
-        root.appendChild(h('div', { class: 'card', 'data-base-totals': '1' }, h('h3', null, 'Lãi gộp quy đổi ' + bc + ' (tham khảo)'), h('div', { class: 'grid g4', style: 'margin-bottom:8px' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Doanh thu quy đổi ' + bc), h('div', { class: 'v' }, fmtMoney(bt.revenue, bc))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Chi phí quy đổi ' + bc), h('div', { class: 'v' }, fmtMoney(bt.cost, bc))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Lãi gộp quy đổi ' + bc), h('div', { class: 'v', style: bt.margin < 0 ? 'color:var(--danger)' : '' }, fmtMoney(bt.margin, bc) + (bt.marginPct === null ? '' : ' (' + bt.marginPct + '%)')))), h('div', { class: 'hint' }, 'Chỉ gồm khoản đã lập hóa đơn (đã ghi nhận), quy đổi theo tỷ giá lưu trên từng chứng từ' + (rates.length ? ' · ' + rates.join(' · ') : '') + '.'), bt.missing ? h('div', { class: 'msg warn' }, bt.missing + ' khoản đã ghi nhận nhưng chứng từ chưa có tỷ giá nên chưa được tính.') : ''));
+        root.appendChild(h('div', { class: 'card', 'data-base-totals': '1' }, h('h3', null, 'Lãi gộp quy đổi ' + bc + ' (tham khảo)'), h('div', { class: 'grid g4', style: 'margin-bottom:8px' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Doanh thu quy đổi ' + bc), h('div', { class: 'v' }, fmtMoney(bt.revenue, bc))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Chi phí quy đổi ' + bc), h('div', { class: 'v' }, fmtMoney(bt.cost, bc))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Lãi gộp quy đổi ' + bc), h('div', { class: 'v', style: bt.margin < 0 ? 'color:var(--danger)' : '' }, fmtMoney(bt.margin, bc) + (bt.marginPct === null ? '' : ' (' + fmtPct(bt.marginPct) + ')')))), h('div', { class: 'hint' }, 'Chỉ gồm khoản đã lập hóa đơn (đã ghi nhận), quy đổi theo tỷ giá lưu trên từng chứng từ' + (rates.length ? ' · ' + rates.join(' · ') : '') + '.'), bt.missing ? h('div', { class: 'msg warn' }, bt.missing + ' khoản đã ghi nhận nhưng chứng từ chưa có tỷ giá nên chưa được tính.') : ''));
     }
     ['REVENUE', 'COST'].forEach(function (kind) {
         var list = d.accruals.filter(function (a) { return a.kind === kind && a.status !== 'CANCELLED'; }), picked = {}, box = h('div', { class: 'card' });
@@ -4084,7 +4147,7 @@ function splitEditor(orders, a, ctx) {
         var c = ctx(), n = c.net, msg = '';
         if (method.value === 'PERCENT') {
             var tot = list.reduce(function (s0, it) { return s0 + (Number(String(it.vi.value).replace(',', '.')) || 0); }, 0);
-            msg = 'Tổng: ' + (Math.round(tot * 100) / 100) + '% (cần đúng 100%)';
+            msg = 'Tổng: ' + fmtPct(Math.round(tot * 100) / 100) + ' (cần đúng 100%)';
         }
         else if (method.value === 'AMOUNT') {
             var t2 = list.reduce(function (s0, it) { var m = parseMoney(it.vi.value, c.cur); return s0 + (m && !Number.isNaN(m) ? m : 0); }, 0);
@@ -4268,14 +4331,14 @@ async function xmlFillInvoiceDialog(fields, items, cur, isCost, partnerId) {
     var r = await xmlPickOne();
     if (!r)
         return;
-    var inv = r.invoice, dec = cur === 'VND' ? 1 : 100, msgs = [];
+    var inv = r.invoice, decs = curInfo(cur).decimals, msgs = [];
     fields.inv.value = inv.number;
     fields.ser.value = (inv.form || '') + (inv.serial || '');
     if (fields.invD && inv.date)
         fields.invD.value = fmtDate(inv.date);
     if (fields.docD && inv.date && !fields.docD.value)
         fields.docD.value = fmtDate(inv.date);
-    var tot = items.reduce(function (a, x) { return a + x.grossMinor; }, 0), xmlGross = inv.totals.gross === null ? null : Math.round(inv.totals.gross * dec);
+    var tot = items.reduce(function (a, x) { return a + x.grossMinor; }, 0), xmlGross = inv.totals.gross === null ? null : EInvoiceXml.toMinor(inv.totals.gross, decs);
     if (inv.currency && inv.currency !== cur)
         msgs.push('Tiền tệ XML (' + inv.currency + ') khác các khoản đã chọn (' + cur + ').');
     if (xmlGross !== null && xmlGross !== tot)
@@ -4292,7 +4355,7 @@ async function xmlFillDocForm(c) {
     var r = await xmlPickOne();
     if (!r)
         return;
-    var inv = r.invoice, dir = c.dirSel.value, party = dir === 'AR' ? inv.buyer : inv.seller, p = xmlFindPartner(party, dir), msgs = r.warnings.slice(), det = xmlDetectDir(inv), cur = inv.currency || 'VND', dec = cur === 'VND' ? 1 : 100;
+    var inv = r.invoice, dir = c.dirSel.value, party = dir === 'AR' ? inv.buyer : inv.seller, p = xmlFindPartner(party, dir), msgs = r.warnings.slice(), det = xmlDetectDir(inv), cur = inv.currency || 'VND', decs = curInfo(cur).decimals;
     if (det && det !== dir)
         msgs.push('XML này là hóa đơn ' + (det === 'AR' ? 'BÁN' : 'MUA') + ' nhưng form đang nhập chiều ' + (dir === 'AR' ? 'phải thu' : 'phải trả') + '.');
     if (p) {
@@ -4308,7 +4371,7 @@ async function xmlFillDocForm(c) {
     if (S.boot.catalogs.currencies.some(function (x) { return x.code === cur; }))
         c.curSel.value = cur;
     var dflt = (S.boot.catalogs.feeTypes.filter(function (x) { return x.code === 'OTHER'; })[0] || S.boot.catalogs.feeTypes[0] || {}).code || '';
-    var nl = inv.lines.filter(function (l) { return !l.isDiscount && l.net !== null; }).map(function (l) { return { feeTypeCode: dflt, description: String(l.name || '').slice(0, 500), serviceCode: '', declNo: '', declDate: '', containerQty: null, netMinor: Math.round(l.net * dec), vatMode: l.vat.mode, vatRateBp: l.vat.mode === 'EXCLUSIVE' ? Math.round(l.vat.pct * 100) : null, isPassThrough: 0, lotNote: '' }; });
+    var nl = inv.lines.filter(function (l) { return !l.isDiscount && l.net !== null; }).map(function (l) { return { feeTypeCode: dflt, description: String(l.name || '').slice(0, 500), serviceCode: '', declNo: '', declDate: '', containerQty: null, netMinor: EInvoiceXml.toMinor(l.net, decs), vatMode: l.vat.mode, vatRateBp: l.vat.mode === 'EXCLUSIVE' ? Math.round(l.vat.pct * 100) : null, isPassThrough: 0, lotNote: '' }; });
     if (nl.length) {
         c.lines.length = 0;
         nl.forEach(function (l) { c.lines.push(l); });
@@ -4688,7 +4751,7 @@ async function docForm(existing, dirDefault) {
         }
         btn.disabled = true;
         try {
-            var res = await api('doc.save', p, { write: true, requestId: requestId });
+            var res = await apiFx('doc.save', p, { write: true, requestId: requestId });
             S.dirty = false;
             requestId = uuid();
             (res.warnings || []).forEach(function (w) { toast(w.message, 'warn'); });
@@ -4786,7 +4849,7 @@ VIEWS.doc = async function (r) {
         root.appendChild(h('div', { class: 'grid g3' }, h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Thành tiền'), h('div', { class: 'v' }, fmtMoney(d.totalGrossMinor, d.currency))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, d.direction === 'AR' ? 'Đã thu' : 'Đã trả'), h('div', { class: 'v' }, fmtMoney(d.allocatedMinor, d.currency))), h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'Còn lại (tại ' + fmtDate(data.asOf) + ')'), h('div', { class: 'v' }, fmtMoney(d.outstandingMinor, d.currency)))));
     root.appendChild(h('h2', null, 'Dòng phí'));
     root.appendChild(responsiveList([{ label: '#', key: 'lineNo' }, { label: 'Loại phí', render: function (l) { return feeName(l.feeTypeCode); } }, { label: 'Diễn giải', key: 'description' }, { label: 'Mã dịch vụ', render: function (l) { return l.serviceCode ? h('div', null, l.serviceCode, l.hsdvNo ? h('div', { class: 'hint' }, l.hsdvNo + (l.department ? ' · ' + l.department : '')) : null) : '—'; } }, { label: 'Tờ khai', render: function (l) { return l.declNo ? l.declNo + (l.declDate ? ' · ' + fmtDate(l.declDate) : '') : '—'; } },
-        { label: 'SL', render: function (l) { return l.containerQty === null ? '—' : fmtDecVn(l.containerQty); }, align: 'r' }, { label: 'Đơn giá', render: function (l) { return l.unitPrice === null || l.unitPrice === undefined ? '—' : fmtDecVn(l.unitPrice); }, align: 'r' }, { label: 'Trước thuế', align: 'r', render: function (l) { return fmtMoney(l.netMinor, d.currency); } }, { label: 'Thuế', render: function (l) { return l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '% = ' + fmtMoney(l.vatMinor, d.currency) : VN.vat[l.vatMode]; } },
+        { label: 'SL', render: function (l) { return l.containerQty === null ? '—' : fmtDecVn(l.containerQty); }, align: 'r' }, { label: 'Đơn giá', render: function (l) { return l.unitPrice === null || l.unitPrice === undefined ? '—' : fmtDecVn(l.unitPrice); }, align: 'r' }, { label: 'Trước thuế', align: 'r', render: function (l) { return fmtMoney(l.netMinor, d.currency); } }, { label: 'Thuế', render: function (l) { return l.vatMode === 'EXCLUSIVE' ? fmtPct(l.vatRateBp / 100) + ' = ' + fmtMoney(l.vatMinor, d.currency) : VN.vat[l.vatMode]; } },
         { label: 'Thành tiền', align: 'r', render: function (l) { return fmtMoney(l.grossMinor, d.currency) + (l.isPassThrough ? (d.direction === 'AR' ? ' (chi hộ)' : ' (thu hộ)') : ''); } }, { label: 'Còn lại', align: 'r', render: function (l) { return l.outstandingMinor === null ? '—' : fmtMoney(l.outstandingMinor, d.currency); } }], data.lines));
     root.appendChild(h('h2', null, 'Thanh toán đã phân bổ'));
     root.appendChild(dataTable([{ label: 'Phiếu', render: function (a) { return h('a', { href: '#/payment/' + a.paymentId }, a.payNo || a.paymentId); } }, { label: 'Ngày hiệu lực', render: function (a) { return fmtDate(a.effectiveDate); } }, { label: 'Số tiền', align: 'r', render: function (a) { return fmtMoney(a.amountMinor, d.currency); } }, { label: 'Ghi chú', render: function (a) { return a.reversesAllocId ? 'Đảo phân bổ' : ''; } }], data.allocations, { empty: 'Chưa có thanh toán nào được phân bổ.' }));
@@ -4904,7 +4967,7 @@ async function paymentForm(existing, dirDefault) {
     async function save(thenSubmit, btn) {
         btn.disabled = true;
         try {
-            var res = await api('payment.save', { id: existing ? p.id : undefined, ifVersion: existing ? p.version : undefined, direction: dir.value, partnerId: partner.value, currency: cur.value, amountMinor: amt.getMinor(), effectiveDate: dt.getIso() || '', method: method.value, allocPlan: picker ? picker.getPlan() : undefined, cashAccountCode: cash.value, bankRef: ref.value, purpose: purpose.value, note: note.value, fxRate: fxIn.getRate() }, { write: true, requestId: requestId });
+            var res = await apiFx('payment.save', { id: existing ? p.id : undefined, ifVersion: existing ? p.version : undefined, direction: dir.value, partnerId: partner.value, currency: cur.value, amountMinor: amt.getMinor(), effectiveDate: dt.getIso() || '', method: method.value, allocPlan: picker ? picker.getPlan() : undefined, cashAccountCode: cash.value, bankRef: ref.value, purpose: purpose.value, note: note.value, fxRate: fxIn.getRate() }, { write: true, requestId: requestId });
             S.dirty = false;
             requestId = uuid();
             (res.warnings || []).forEach(function (w) { toast(w.message, 'warn'); });
@@ -5657,7 +5720,7 @@ VIEWS.fx = async function (r, main, page) {
                 }
                 save.disabled = true;
                 try {
-                    var res = await api('fx.save', { currency: fCur.value, rateDate: fDate.getIso(), rate: rate, buy: buy, sell: sell, note: fNote.value }, { write: true });
+                    var res = await apiFx('fx.save', { currency: fCur.value, rateDate: fDate.getIso(), rate: rate, buy: buy, sell: sell, note: fNote.value }, { write: true });
                     toast(res.replaced ? 'Đã cập nhật tỷ giá nhập tay' : 'Đã lưu tỷ giá');
                     load();
                 }
@@ -5948,7 +6011,7 @@ VIEWS.drafts = async function (r, main, page) {
             slot.appendChild(h('div', { class: 'msg warn', 'data-draft-expiring': d.expiringCount }, h('b', null, d.expiringCount + ' bản nháp sẽ tự xóa trong ' + d.warnDays + ' ngày tới.'), ' Mở lại để tiếp tục nhập (lưu lại sẽ tính lại 30 ngày) hoặc Xuất (.json) để giữ nội dung.'));
         slot.appendChild(responsiveList([
             { label: 'Loại', render: function (x) { return KIND[x.kind] || x.kind; } }, { label: 'Nội dung', render: function (x) { return x.title || '(chưa đặt tên)'; } },
-            { label: 'Cập nhật', render: function (x) { return new Date(x.updatedAt).toLocaleString('vi-VN'); } }, { label: 'Hạn giữ', render: function (x) { return x.daysLeft === null ? '' : badge(x.daysLeft <= 0 ? 'Hết hạn hôm nay' : 'Còn ' + x.daysLeft + ' ngày', x.daysLeft <= 2 ? 'danger' : x.expiring ? 'warn' : ''); } },
+            { label: 'Cập nhật', render: function (x) { return fmtTime(x.updatedAt); } }, { label: 'Hạn giữ', render: function (x) { return x.daysLeft === null ? '' : badge(x.daysLeft <= 0 ? 'Hết hạn hôm nay' : 'Còn ' + x.daysLeft + ' ngày', x.daysLeft <= 2 ? 'danger' : x.expiring ? 'warn' : ''); } },
             { label: 'Ghi chú', render: function (x) { return x.targetGone ? badge('Bản ghi gốc đã mất', 'danger') : x.stale ? badge('Bản ghi gốc đã đổi', 'warn') : ''; } },
             { label: '', render: function (x) { return h('div', { class: 'bar' }, h('button', { class: 'sm', onclick: function () { openDraft(x); } }, 'Mở'), h('button', { class: 'sm', 'data-draft-export': x.id, onclick: async function () { try { var g = await api('draft.get', { id: x.id }), blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), draft: g }, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob), a = h('a', { href: url, download: 'ban-nhap-' + x.kind + '-' + x.id + '.json' }); document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, BLOB_URL_TTL_MS); } catch (e) { showError(e); } } }, 'Xuất (.json)'), h('button', { class: 'sm danger', onclick: function () { confirmBox('Xóa bản nháp này?', async function () { await api('draft.discard', { id: x.id }); load(); }, 'Xóa', true); } }, 'Xóa')); } }
         ], d.items, { empty: 'Bạn không có bản nháp nào.' }));
