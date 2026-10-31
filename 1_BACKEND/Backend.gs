@@ -2448,6 +2448,16 @@ function perfListSliceSet(on, gap) { props_().setProperty('PERF_LIST_SLICE', on 
     props_().setProperty('PERF_SLICE_GAP', String(gap)); }
 function listRows_(t) { return perfListSlice_() ? repoSliceValid_(t, LIST_COLS_[t], MEMO_.listGap) : repoValid_(t); }
 function loadLedger_(user, asOf) {
+    // Lượt dựng bảng tổng hợp (chỉ đọc, người dùng hệ thống): 5 mô hình cùng cần một sổ cùng ngày → tính một lần.
+    var memoOn = MEMO_.rmLed && user === RM_USER_;
+    if (memoOn && MEMO_.rmLed[asOf])
+        return MEMO_.rmLed[asOf];
+    var led = loadLedgerRaw_(user, asOf);
+    if (memoOn && MEMO_.rmLed)
+        MEMO_.rmLed[asOf] = led;
+    return led;
+}
+function loadLedgerRaw_(user, asOf) {
     var pm = partnerMap_();
     var docs = listRows_('DebtDoc').filter(function (d) { return inScope_(user, pm[d.partnerId], d.businessGroupCode); });
     var dset = byId_(docs);
@@ -2667,7 +2677,7 @@ function dashboardSummaryLive_(user, req) {
         var me = monthEnd_(mo);
         if (me > asOf)
             me = asOf;
-        var b = computeBalances(led.docs, led.lines, led.allocs, me);
+        var b = me === asOf && led.asOf === asOf ? led.bal : computeBalances(led.docs, led.lines, led.allocs, me);
         Object.keys(b.byLine).forEach(function (id) {
             var d = led.docById[b.byLine[id].docId];
             if (p.currency && d.currency !== p.currency)
@@ -3100,7 +3110,7 @@ function resolveLineRefs_(tx, rawLines, lines, group, partnerId, direction) {
 function docSave_(user, req) {
     requirePerm_(user, 'doc.write');
     var p = req.payload, prior = p && p.id ? repoFind_('DebtDoc', p.id) : null, fxCur = p && (p.currency || (prior && prior.currency)), fxDate = p && (p.docDate || (prior && prior.docDate));
-    var fxp = (p && currencyMap_()[fxCur] && isDate_(fxDate) && fxDate >= ledgerStart_()) ? fxResolve_(user, fxCur, fxDate, p.fxRate) : null;
+    var fxp = (p && currencyMap_()[fxCur] && isDate_(fxDate) && fxDate >= ledgerStart_()) ? fxResolve_(user, fxCur, fxDate, p.fxRate, p.fxConfirm) : null;
     return runTx_(user, { requestId: req.requestId, action: 'doc.save', payload: p, failAt: req.failAt }, function (tx) {
         var env = docEnv_(tx, p.partnerId, user), existing = p.id ? tx.find('DebtDoc', p.id) : null;
         if (p.id && !existing)
@@ -4979,12 +4989,18 @@ function accrualSave_(user, req) {
         var l = calc.line, fields = { orderId: mode === 'ORDER' ? o.id : '', serviceCode: svcCode, kind: p.kind, partnerId: partner.id, poRef: maxStr_(p.poRef, 100).trim(), accrualDate: p.accrualDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty, unitPrice: l.unitPrice,
             netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough, currency: p.currency, note: maxStr_(p.note, 300) };
         var creditWarn = p.kind === 'REVENUE' ? enforceCredit_(tx, user, partner.id, p.currency, todayVn_(), existing ? l.grossMinor - existing.grossMinor : l.grossMinor, p) : [];
+        var dupWarn = [];
+        if (!existing) {
+            var dk0 = accrualDupKey_(p.kind, fields.orderId || (shares ? 'S:' + shares.map(function (x) { return x.orderId; }).sort().join(',') : 'G'), partner.id, svcCode, l, p.currency, p.accrualDate, fields.poRef), same = accrualDupIndex_(tx.rows('Accrual'), tx.rows('AccrualSplit'), p.kind)[dk0];
+            if (same)
+                dupWarn.push({ code: 'ACCRUAL_SUSPECT_DUP', message: 'Khoản này giống một khoản đã có (cùng đơn, ngày, loại phí, số tiền). Nếu nhập nhầm hai lần, hãy hủy một khoản.' });
+        }
         var row = existing ? tx.update('Accrual', existing.id, fields, p.ifVersion) : tx.insert('Accrual', Object.assign({ status: 'OPEN', docId: '', debtLineId: '' }, fields));
         tx.rows('AccrualSplit').forEach(function (x) { if (x.accrualId === row.id)
             tx.update('AccrualSplit', x.id, { isDeleted: 1 }); });
         if (shares)
             shares.forEach(function (x) { tx.insert('AccrualSplit', { accrualId: row.id, orderId: x.orderId, shareNetMinor: x.net, shareVatMinor: x.vat, shareGrossMinor: x.net + x.vat, basis: x.basis, note: '' }); });
-        return { result: { id: row.id, grossMinor: l.grossMinor, status: 'OPEN', allocMode: mode, splitCount: shares ? shares.length : 0, warnings: creditWarn },
+        return { result: { id: row.id, grossMinor: l.grossMinor, status: 'OPEN', allocMode: mode, splitCount: shares ? shares.length : 0, warnings: creditWarn.concat(dupWarn) },
             audit: [{ entityType: o ? 'Order' : 'Accrual', entityId: o ? o.id : row.id, action: existing ? 'accrual.update' : 'accrual.create', diff: { kind: p.kind, gross: l.grossMinor, currency: p.currency, mode: mode, orders: shares ? shares.length : undefined } }] };
     });
 }
@@ -5354,9 +5370,26 @@ function bulkFindFee_(feeTypes, v) { var n = normText_(v); if (!n)
     return null; for (var i = 0; i < feeTypes.length; i++)
     if (normText_(feeTypes[i].code) === n || normText_(feeTypes[i].name) === n)
         return feeTypes[i].code; return null; }
+// Dấu vân tay của một khoản phát sinh: hai khoản cùng loại/đơn (hoặc cùng cách chia)/đối tác/mã dịch vụ/loại phí/ngày/tiền tệ/số tiền/thuế/số lượng/diễn giải/PO nhà cung cấp coi là NGHI TRÙNG.
+function accrualDupKey_(kind, orderKey, partnerId, serviceCode, line, currency, date, poRef) {
+    return [kind, orderKey, partnerId, serviceCode || '', line.feeTypeCode, date, currency, line.netMinor, line.vatMode, line.vatRateBp || 0, line.isPassThrough ? 1 : 0, line.containerQty === null || line.containerQty === undefined ? '' : line.containerQty, normText_(line.description || ''), normText_(poRef || '')].join('|');
+}
+function accrualDupIndex_(rows, splitRows, kind) {
+    var spl = {}, idx = {};
+    (splitRows || []).forEach(function (x) { if (x.isDeleted !== 1)
+        (spl[x.accrualId] = spl[x.accrualId] || []).push(x.orderId); });
+    (rows || []).forEach(function (a) {
+        if (a.status === 'CANCELLED' || a.isDeleted === 1 || (kind && a.kind !== kind))
+            return;
+        var ok = a.orderId || (spl[a.id] ? 'S:' + spl[a.id].slice().sort().join(',') : 'G'), k = accrualDupKey_(a.kind, ok, a.partnerId, a.serviceCode, a, a.currency, a.accrualDate, a.poRef);
+        if (!idx[k])
+            idx[k] = a;
+    });
+    return idx;
+}
 function bulkBuild_(env, kind, rows) {
     var partners = env.rows('Partner').filter(function (p) { return p.status === 'ACTIVE'; }), feeTypes = catalogList_('FEE_TYPE'), cur = currencyMap_(), groups = catalogList_('BUSINESS_GROUP').map(function (c) { return c.code; }), ls = ledgerStart_();
-    var closedMonths = {}, orders = env.rows('Order').filter(function (o) { return o.status === 'OPEN'; }), newOrders = {}, createdIds = {}, rmap = serviceMap_(), results = [], created = { orders: 0, accruals: 0 }, creditExtra = {};
+    var closedMonths = {}, orders = env.rows('Order').filter(function (o) { return o.status === 'OPEN'; }), newOrders = {}, createdIds = {}, rmap = serviceMap_(), results = [], created = { orders: 0, accruals: 0 }, creditExtra = {}, dupIdx = null, batchKeys = {}, duplicates = { existing: 0, inBatch: 0 };
     env.rows('Period').forEach(function (pe) { if (pe.status === 'CLOSED')
         closedMonths[pe.id] = 1; });
     function pfind(name, role) { var n = normText_(name), hits = partners.filter(function (p) { return (role === 'C' ? p.isCustomer : p.isSupplier) && (normText_(p.shortName) === n || normText_(p.legalName) === n); }); return hits.length === 1 ? hits[0] : (hits.length > 1 ? 'AMBIGUOUS' : null); }
@@ -5539,6 +5572,21 @@ function bulkBuild_(env, kind, rows) {
             }
         }
         if (!issues.length && res.line && (order || (kind === 'COST' && mode !== 'ORDER'))) {
+            if (!dupIdx)
+                dupIdx = accrualDupIndex_(env.rows('Accrual'), env.rows('AccrualSplit'), kind);
+            var dk = accrualDupKey_(kind, order ? order.id : (res.shares ? 'S:' + res.shares.map(function (x) { return x.orderId; }).sort().join(',') : 'G'), partner.id, order ? svcCode : '', res.line, currency, date, kind === 'COST' ? maxStr_(r.poRef, 100).trim() : ''), dupOf = dupIdx[dk];
+            if (dupOf) {
+                res.dup = 'EXISTING';
+                duplicates.existing++;
+                issues.push({ field: 'row', code: 'DUPLICATE_EXISTING', severity: 'WARNING', message: 'Giống khoản đã có (cùng đơn, ngày ' + rptDateVn_(date) + ', loại phí, số tiền).' });
+            }
+            else if (batchKeys[dk]) {
+                res.dup = 'IN_BATCH';
+                duplicates.inBatch++;
+                issues.push({ field: 'row', code: 'DUPLICATE_IN_BATCH', severity: 'WARNING', message: 'Giống dòng ' + batchKeys[dk] + ' trong cùng tệp.' });
+            }
+            else
+                batchKeys[dk] = i + 1;
             var a = env.insert('Accrual', { orderId: order ? order.id : '', serviceCode: order ? svcCode : '', kind: kind, partnerId: partner.id, poRef: kind === 'COST' ? maxStr_(r.poRef, 100).trim() : '', accrualDate: date, feeTypeCode: res.line.feeTypeCode, description: res.line.description, containerQty: res.line.containerQty, unitPrice: res.line.unitPrice,
                 netMinor: res.line.netMinor, vatMode: res.line.vatMode, vatRateBp: res.line.vatRateBp, vatMinor: res.line.vatMinor, grossMinor: res.line.grossMinor, isPassThrough: res.line.isPassThrough, currency: currency, status: 'OPEN', docId: '', debtLineId: '', note: 'Nhập hàng loạt' });
             if (res.shares)
@@ -5554,7 +5602,7 @@ function bulkBuild_(env, kind, rows) {
         }
         results.push(res);
     });
-    return { results: results, created: created, creditExtra: creditExtra };
+    return { results: results, created: created, creditExtra: creditExtra, duplicates: duplicates };
 }
 function fmtPlain_(minor, dec) { return formatMinorVn_(minor, dec); }
 function orderBulkPreview_(user, req) {
@@ -5568,7 +5616,7 @@ function orderBulkPreview_(user, req) {
         throw err_('VALIDATION_FAILED', 'Tối đa 1.000 dòng một lần.');
     var seq = 0, env = { preview: true, update: function () { }, user: user, rows: function (t) { return repoValid_(t); }, insert: function (t, o) { return Object.assign({ id: 'preview_' + (++seq) }, o); }, nextSeq: function () { return 0; } };
     var out = bulkBuild_(env, p.kind, p.rows), bad = out.results.filter(function (r) { return !r.ok; }).length;
-    return { rows: out.results.map(function (r) { return { rowNo: r.rowNo, ok: r.ok, issues: r.issues, summary: r.summary }; }), errors: bad, created: out.created, canCommit: bad === 0 };
+    return { rows: out.results.map(function (r) { return { rowNo: r.rowNo, ok: r.ok, issues: r.issues, summary: r.summary, dup: r.dup || '' }; }), errors: bad, created: out.created, duplicates: out.duplicates, canCommit: bad === 0 };
 }
 function orderBulkCommit_(user, req) {
     requirePerm_(user, 'order.write');
@@ -5581,9 +5629,12 @@ function orderBulkCommit_(user, req) {
         var out = bulkBuild_({ user: user, rows: tx.rows, insert: tx.insert, update: tx.update, nextSeq: tx.nextSeq }, p.kind, p.rows), bad = out.results.filter(function (r) { return !r.ok; });
         if (bad.length)
             throw err_('VALIDATION_FAILED', 'Còn ' + bad.length + ' dòng lỗi, chưa ghi dòng nào.', bad.reduce(function (a, r) { return a.concat(r.issues.map(function (i) { return { path: 'row' + r.rowNo + '.' + i.field, code: i.code, message: 'Dòng ' + r.rowNo + ': ' + i.message }; })); }, []));
+        var dupN = out.duplicates.existing + out.duplicates.inBatch;
+        if (dupN && p.acknowledgeDuplicates !== true)
+            throw err_('DUPLICATE_SUSPECTED', dupN + ' dòng giống khoản đã có (' + out.duplicates.existing + ') hoặc trùng nhau trong tệp (' + out.duplicates.inBatch + '). Chưa ghi dòng nào. Kiểm tra nếu nhập lại tệp cũ; nếu đúng là các khoản riêng thì xác nhận rồi ghi lại.', out.results.filter(function (r) { return r.dup; }).map(function (r) { return { path: 'row' + r.rowNo, code: 'DUPLICATE_' + (r.dup === 'EXISTING' ? 'EXISTING' : 'IN_BATCH'), message: 'Dòng ' + r.rowNo + (r.dup === 'EXISTING' ? ' giống khoản đã có.' : ' trùng dòng khác trong tệp.') }; }));
         var warnings = [];
         Object.keys(out.creditExtra).forEach(function (k) { var x = k.split('|'); enforceCredit_(tx, user, x[0], x[1], todayVn_(), out.creditExtra[k], p).forEach(function (w) { warnings.push(w); }); });
-        return { result: { created: out.created, warnings: warnings }, audit: [{ entityType: 'Order', entityId: 'bulk', action: 'order.bulk.' + p.kind.toLowerCase(), diff: { created: out.created } }] };
+        return { result: { created: out.created, duplicates: out.duplicates, warnings: warnings }, audit: [{ entityType: 'Order', entityId: 'bulk', action: 'order.bulk.' + p.kind.toLowerCase(), diff: { created: out.created, duplicatesAcknowledged: dupN } }] };
     });
 }
 // ---- Nhập hàng loạt HÓA ĐƠN bán (phải thu) / hóa đơn mua (phải trả): mỗi hóa đơn = một chứng từ NHÁP nhiều dòng phí; dùng đúng luật kiểm tra của doc.save.
@@ -6109,6 +6160,9 @@ function fxE4_(v) {
     var p = s.split('.'), n = Number(p[0]) * 10000 + Number((p[1] || '').padEnd(4, '0'));
     return n > 0 && Number.isSafeInteger(n) ? n : 0;
 }
+// Phần trăm theo định dạng Việt Nam: bp = điểm cơ bản (800 → "8%"), pctNum = số phần trăm (12.5 → "12,5%").
+function fmtBp_(bp) { return Number.isSafeInteger(bp) ? formatMinorVn_(bp, 2).replace(/,?0+$/, '') + '%' : ''; }
+function fmtPctNum_(p) { return typeof p === 'number' && isFinite(p) ? formatMinorVn_(Math.round(p * 100), 2).replace(/,?0+$/, '') + '%' : '—'; }
 function fxText_(e4) { return e4 > 0 ? formatMinorVn_(e4, 4).replace(/,?0+$/, '') : ''; }
 function fxToBase_(minor, dec, e4) {
     var num = BigInt(minor) * BigInt(e4), den = BigInt(10000) * BigInt(Math.pow(10, dec)), neg = num < BigInt(0), a = neg ? -num : num, q = (a * BigInt(2) + den) / (den * BigInt(2)), r = Number(neg ? -q : q);
@@ -6210,13 +6264,31 @@ function fxStore_(user, cur, date, e4, source, note) {
     });
 }
 // Xác định tỷ giá của một ngày: nhập tay trên phiếu > bảng tỷ giá (nhập tay trước, Google sau) > tự lấy Google Finance > báo thiếu. Gọi TRƯỚC khi mở giao dịch ghi sổ (có thể ghi bảng tỷ giá).
-function fxResolve_(user, cur, date, manual) {
+// Giới hạn hợp lý của tỷ giá nhập tay: tuyệt đối [0,1 ; 50.000.000] VND/đơn vị ngoại tệ (không vượt được); tương đối ±30% so với tỷ giá gần nhất đã có (vượt thì phải xác nhận).
+var FX_ABS_MIN_E4_ = 1000, FX_ABS_MAX_E4_ = 500000000000, FX_DEV_PCT_ = 30;
+function fxPlausible_(cur, date, e4, confirm, path) {
+    if (e4 < FX_ABS_MIN_E4_ || e4 > FX_ABS_MAX_E4_)
+        throw err_('VALIDATION_FAILED', 'Tỷ giá ngoài khoảng hợp lý.', [{ path: path, code: 'FX_OUT_OF_RANGE', message: 'Tỷ giá phải từ 0,1 đến 50.000.000 ' + BASE_CUR_ + ' cho 1 ' + cur + '. Kiểm tra dấu chấm/phẩy (ví dụ 25.438,5).' }]);
+    var ref = fxNearest_(cur, date), anyRows = null;
+    if (!ref) {
+        repoValid_('FxRate').forEach(function (r) { if (r.currency === cur && r.rateE4 > 0 && (!anyRows || r.rateDate > anyRows.rateDate))
+            anyRows = r; });
+        ref = anyRows;
+    }
+    if (!ref || confirm === true)
+        return;
+    var dev = Math.abs(e4 - ref.rateE4) * 100 / ref.rateE4;
+    if (dev > FX_DEV_PCT_)
+        throw err_('VALIDATION_FAILED', 'Tỷ giá lệch nhiều so với tỷ giá gần nhất.', [{ path: path, code: 'FX_IMPLAUSIBLE', message: 'Tỷ giá ' + fxText_(e4) + ' lệch ' + fmtPctNum_(Math.round(dev * 10) / 10) + ' so với tỷ giá gần nhất ' + fxText_(ref.rateE4) + ' (ngày ' + rptDateVn_(ref.rateDate) + '). Nếu đúng, xác nhận để lưu.' }]);
+}
+function fxResolve_(user, cur, date, manual, confirm) {
     if (!cur || cur === BASE_CUR_ || !isDate_(date))
         return null;
     if (manual !== undefined && manual !== null && String(manual).trim() !== '') {
         var m = fxE4_(manual);
         if (!m)
             throw err_('VALIDATION_FAILED', 'Tỷ giá không hợp lệ.', [{ path: 'fxRate', code: 'FX_INVALID', message: 'Nhập tỷ giá dạng số dương, tối đa 4 số lẻ.' }]);
+        fxPlausible_(cur, date, m, confirm, 'fxRate');
         if (!fxFind_(cur, date))
             fxStore_(user, cur, date, m, 'MANUAL', 'Nhập trên chứng từ');
         return { cur: cur, date: date, e4: m, source: 'MANUAL' };
@@ -6256,6 +6328,9 @@ function fxSave_(user, req) {
         errs.push({ path: 'buy', code: 'FX_INVALID', message: 'Tỷ giá mua không được lớn hơn tỷ giá bán.' });
     if (errs.length)
         throw err_('VALIDATION_FAILED', 'Dữ liệu chưa hợp lệ', errs);
+    fxPlausible_(p.currency, p.rateDate, e4, p.fxConfirm, 'rate');
+    [['buy', buy4], ['sell', sell4]].forEach(function (x) { if (x[1])
+        fxPlausible_(p.currency, p.rateDate, x[1], p.fxConfirm, x[0]); });
     return runTx_(user, { requestId: req.requestId, action: 'fx.save', payload: p, failAt: req.failAt }, function (tx) {
         var same = tx.rows('FxRate').filter(function (r) { return r.currency === p.currency && r.rateDate === p.rateDate && r.source === 'MANUAL' && r.isDeleted !== 1; })[0], row;
         if (same)
@@ -7787,7 +7862,7 @@ function paymentGet_(user, req) {
 }
 function paymentSave_(user, req) {
     requirePerm_(user, 'payment.write');
-    var p = req.payload, fxp = (p && currencyMap_()[p.currency] && isDate_(p.effectiveDate) && p.effectiveDate >= ledgerStart_()) ? fxResolve_(user, p.currency, p.effectiveDate, p.fxRate) : null;
+    var p = req.payload, fxp = (p && currencyMap_()[p.currency] && isDate_(p.effectiveDate) && p.effectiveDate >= ledgerStart_()) ? fxResolve_(user, p.currency, p.effectiveDate, p.fxRate, p.fxConfirm) : null;
     return runTx_(user, { requestId: req.requestId, action: 'payment.save', payload: p, failAt: req.failAt }, function (tx) {
         var errs = [];
         function E(path, code, msg) { errs.push({ path: path, code: code, message: msg }); }
@@ -8230,7 +8305,6 @@ function periodReopenConfirm_(user, req) {
 }
 function rcNum_(v) { return typeof v === 'number' && isFinite(v) ? v : (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null); }
 function rcStr_(v) { return v === null || v === undefined ? '' : String(v).trim(); }
-function rcMinor_(v, cur) { return cur === 'USD' ? Math.round(v * 100) : Math.round(v); }
 function rcIsTotal_(s) { return /^(t[oổ]ng|c[oộ]ng)/i.test(normText_(s).replace(/^(\w)/, '$1')) || /^t[ổo]ng/i.test(String(s).trim().toLowerCase()); }
 /* Khóa so khớp: bỏ dấu, chữ hoa/thường, khoảng trắng và dấu phân cách; số thuần túy bỏ số 0 đầu. */
 function rcKey_(s) {
@@ -8789,7 +8863,7 @@ function rep05_(user, code, params) {
             var pass = l.isPassThrough ? l.grossMinor : 0, svcNet = l.isPassThrough ? 0 : l.netMinor, vat = l.isPassThrough ? 0 : l.vatMinor;
             if (l.vatMode === 'UNCONFIRMED' && !l.isPassThrough)
                 blockers[l.id] = 1;
-            var rate = l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : l.vatMode === 'NONE' ? 'KCT' : '?';
+            var rate = l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : l.vatMode === 'NONE' ? 'KCT' : '?';
             addRow_(rep, 'data', { stt: i === 0 ? n : '', decl: i === 0 && r ? r.refValue : '', declDate: i === 0 && r ? r.refDate : '', desc: l.description, qty: i === 0 && l.containerQty !== null ? l.containerQty : (l.containerQty === null ? '' : l.containerQty),
                 net: svcNet, rate: rate, vat: vat, svc: svcNet + vat, pass: pass, total: svcNet + vat + pass, lot: l.lotNote }, cur);
             T.qty += l.containerQty || 0;
@@ -8802,7 +8876,7 @@ function rep05_(user, code, params) {
     });
     adjLines.forEach(function (l) {
         var ad = dset[l.docId], pass = l.isPassThrough ? l.grossMinor : 0, svcNet = l.isPassThrough ? 0 : l.netMinor, vat = l.isPassThrough ? 0 : l.vatMinor;
-        addRow_(rep, 'data', { stt: '', decl: '', declDate: docEffDate_(ad), desc: (ad.docType === 'REVERSAL' ? 'Đảo ' : 'Điều chỉnh ') + (ad.docNo || '') + ': ' + l.description, qty: '', net: svcNet, rate: l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : 'KCT', vat: vat,
+        addRow_(rep, 'data', { stt: '', decl: '', declDate: docEffDate_(ad), desc: (ad.docType === 'REVERSAL' ? 'Đảo ' : 'Điều chỉnh ') + (ad.docNo || '') + ': ' + l.description, qty: '', net: svcNet, rate: l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : 'KCT', vat: vat,
             svc: svcNet + vat, pass: pass, total: svcNet + vat + pass, lot: l.lotNote || '' }, cur);
         T.net += svcNet;
         T.vat += vat;
@@ -9130,10 +9204,10 @@ function repVat_(user, code, params, dir) {
             var rate = l.vatMode === 'EXCLUSIVE' ? l.vatRateBp : 'KCT';
             row.net = cv(l.netMinor);
             row.vat = l.vatMode === 'EXCLUSIVE' ? cv(l.vatMinor) : 0;
-            row.rate = l.vatMode === 'EXCLUSIVE' ? (l.vatRateBp / 100) + '%' : 'KCT';
+            row.rate = l.vatMode === 'EXCLUSIVE' ? fmtBp_(l.vatRateBp) : 'KCT';
             if (row.vat && !p.taxCode)
                 cnt.noTax++;
-            (buckets[rate] = buckets[rate] || { rate: rate, label: rate === 'KCT' ? 'Hàng hóa, dịch vụ không chịu thuế GTGT' : 'Hàng hóa, dịch vụ chịu thuế suất ' + (rate / 100) + '%', rows: [] }).rows.push(row);
+            (buckets[rate] = buckets[rate] || { rate: rate, label: rate === 'KCT' ? 'Hàng hóa, dịch vụ không chịu thuế GTGT' : 'Hàng hóa, dịch vụ chịu thuế suất ' + fmtBp_(rate), rows: [] }).rows.push(row);
         });
     });
     var keys = Object.keys(buckets).sort(function (a, b) { return (a === 'KCT' ? 1e9 : Number(a)) - (b === 'KCT' ? 1e9 : Number(b)); }), n = 0, T = { net: 0, vat: 0 };
@@ -9142,7 +9216,7 @@ function repVat_(user, code, params, dir) {
         var b = buckets[k], s = { net: 0, vat: 0 };
         addRow_(rep, 'group', { stt: b.label }, 'VND');
         sortRows(b.rows).forEach(function (r) { r.stt = ++n; addRow_(rep, 'data', r, 'VND'); s.net += r.net; s.vat += r.vat; });
-        addRow_(rep, 'subtotal', { desc: 'Cộng ' + (k === 'KCT' ? 'không chịu thuế' : 'thuế suất ' + (k / 100) + '%'), net: s.net, vat: s.vat }, 'VND');
+        addRow_(rep, 'subtotal', { desc: 'Cộng ' + (k === 'KCT' ? 'không chịu thuế' : 'thuế suất ' + fmtBp_(Number(k))), net: s.net, vat: s.vat }, 'VND');
         T.net += s.net;
         T.vat += s.vat;
     });
@@ -9433,7 +9507,7 @@ function rep09_(user, code, params) {
             parts.push('số hộ chưa đối ứng');
         return parts.length ? 'Lãi gộp theo khoản đã ghi nhận – ' + parts.join('; ') : 'Đủ dữ liệu';
     }
-    function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? Math.round((e.rev - e.cost) * 10000 / e.rev) / 100 + '%' : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
+    function out(e, extra) { return Object.assign({ rev: e.rev, cost: e.cost, margin: e.rev - e.cost, pct: e.rev > 0 ? fmtPctNum_(Math.round((e.rev - e.cost) * 10000 / e.rev) / 100) : '—', passRev: e.passRev, passCost: e.passCost, passGap: e.passRev - e.passCost, state: stateOf(e), unRev: e.un, unCost: e.unc, invRev: e.inv, invCost: e.invc }, extra); }
     if (params.orderId || qOrder) {
         var fo = params.orderId ? D.orders.filter(function (x) { return x.id === params.orderId; })[0] : null;
         rep.meta.order = params.orderId ? (fo ? fo.orderNo + (fo.poNo ? ' · PO ' + fo.poNo : '') : '(không có trong phạm vi xem)') : 'số đơn/PO chứa "' + String(params.q).trim() + '"';
@@ -10059,7 +10133,14 @@ function rmBuildSet_() {
 }
 function rmBuildSetLocked_(leaseToken) {
     var today = todayVn_(), v = beginReadSnapshot_(), values = {}, names = Object.keys(RM_MODELS_);
-    names.forEach(function (m) { values[m] = rmBuild_(m, today); });
+    MEMO_.rmLed = {};
+    try {
+        names.forEach(function (m) { values[m] = rmBuild_(m, today); });
+    }
+    finally {
+        if (MEMO_.rmLed)
+            delete MEMO_.rmLed;
+    }
     assertReadSnapshot_(v);
     var meta = { dataVersion: v, builtAt: nowIso_(), asOf: today }, models = [];
     resetMemo_();
