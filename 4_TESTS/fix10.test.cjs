@@ -42,7 +42,8 @@ ctx.accrualInvoice_(ap,{requestId:'i',payload:{accrualIds:[T.Accrual[0].id],invo
 const row=(po,sc)=>({customer:'ABC',poNo:po,date:'2026-10-11',group:'G1',currency:'VND',serviceCode:sc,feeType:'F',description:'x',netText:'1000',vat:'KCT'});
 const rows=[row('PB1','FWD'),row('PB1','CBT'),row('PB1','FWD'),row('PB2','TRD')];
 const pv=ctx.orderBulkPreview_(ap,{payload:{kind:'REVENUE',rows}});assert.strictEqual(pv.errors,0);assert.strictEqual(pv.created.orders,2,'PB1 gom 3 dòng vào 1 đơn');
-const n0=T.Order.length;ctx.orderBulkCommit_(ap,{requestId:'b',payload:{kind:'REVENUE',rows}});
+const n0=T.Order.length;assert.strictEqual(pv.duplicates.inBatch,1,'hai dòng y hệt trong tệp được báo trùng khi xem trước');assert.strictEqual(pv.rows[2].dup,'IN_BATCH');
+ctx.orderBulkCommit_(ap,{requestId:'b',payload:{kind:'REVENUE',rows,acknowledgeDuplicates:true}});
 const pb1=T.Order.slice(n0).find(x=>x.poNo==='PB1');assertJ(ctx.orderServices_(pb1).map(x=>x.code),['FWD','CBT']);
 const codesAcc=T.Accrual.filter(a=>a.orderId===pb1.id).map(a=>a.serviceCode);assertJ(codesAcc,['FWD','CBT','FWD']);
 // bulk vào PO có sẵn: thêm mã mới (đơn đã lưu trong DB)

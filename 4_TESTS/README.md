@@ -20,3 +20,7 @@ Mỗi lần sửa lỗi nên thêm một ca vào `reject.regression.test.cjs` (�
 
 - `fix14.test.cjs` — hồi quy 6 lỗi định dạng số / tỷ giá / nhập XML (báo cáo kiểm tra 29/10/2026): đọc ô tỷ giá kiểu Mỹ `25,438.5`; kiểm tra tỷ giá hợp lý ở máy chủ (±30% phải xác nhận, ngoài [0,1 ; 50 triệu] không cho); làm tròn tiền XML nửa lên trên chuỗi thập phân (so với BigInt, 30.000 ca ngẫu nhiên); phần trăm dấu phẩy ở máy chủ và giao diện; `fmtMoney` không ném lỗi; giờ theo Asia/Ho_Chi_Minh; xóa `rcMinor_` chết. Chạy bản cũ: `BACKEND_SRC= GATEWAY_SRC= EINVOICE_SRC= node 4_TESTS/fix14.test.cjs` — cả 8 nhóm phải hỏng trên bản cũ.
 - `5_UI_TESTS/ui.e2e.cjs` nhóm 53 — ô tỷ giá, hộp xác nhận tỷ giá lệch (từ chối → không ghi; đồng ý → gửi lại với `fxConfirm`), phần trăm.
+
+- `dup.test.cjs` — chống trùng số liệu khi nhập khoản phát sinh: nhập lại cùng tệp PO/doanh thu hoặc chi phí (xem trước báo trùng, ghi không xác nhận bị chặn và không ghi gì), hai dòng y hệt trong một tệp, khác một trường thì không trùng, khoản đã hủy không tính, chi phí chung / chia nhiều đơn, lưu tay hai khoản y hệt (cảnh báo không chặn); và lượt dựng bảng tổng hợp chỉ tính sổ một lần, kết quả giống hệt tính riêng từng mô hình. Chạy bản cũ: `BACKEND_SRC=<Backend.gs cũ> node 4_TESTS/dup.test.cjs` (7/8 nhóm hỏng trên bản cũ).
+- `bench/_seed_ledger.cjs` — dựng sổ giả N chứng từ cho test/đo hiệu năng.
+- `5_UI_TESTS/ui.e2e.cjs` nhóm 54 — nhập lại tệp PO/doanh thu qua giao diện: badge "Trùng khoản đã có", ô xác nhận.

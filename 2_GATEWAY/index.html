@@ -4573,10 +4573,17 @@ VIEWS.bulk = async function (r) {
             var pv = await api('order.bulkPreview', { kind: kind, rows: rows });
             clear(out);
             out.appendChild(h('div', { class: 'msg ' + (pv.errors ? 'danger' : 'ok') }, pv.errors ? pv.errors + ' dòng lỗi — sửa dữ liệu nguồn rồi xem trước lại (chưa ghi dòng nào).' : 'Tất cả ' + pv.rows.length + ' dòng hợp lệ: sẽ tạo ' + pv.created.orders + ' đơn hàng mới và ' + pv.created.accruals + ' khoản ' + (kind === 'REVENUE' ? 'doanh thu' : 'chi phí') + '.'));
-            out.appendChild(responsiveList([{ label: 'Dòng', key: 'rowNo' }, { label: 'Kết quả', render: function (x) { return x.ok ? badge('Hợp lệ', 'ok') : badge('Lỗi', 'danger'); } }, { label: 'Nội dung', render: function (x) { return x.ok ? x.summary : x.issues.map(function (i) { return h('div', { class: 'errmsg' }, '✖ ' + i.message); }); } }], pv.rows));
+            out.appendChild(responsiveList([{ label: 'Dòng', key: 'rowNo' }, { label: 'Kết quả', render: function (x) { return x.ok ? (x.dup ? badge(x.dup === 'EXISTING' ? 'Trùng khoản đã có' : 'Trùng trong tệp', 'warn') : badge('Hợp lệ', 'ok')) : badge('Lỗi', 'danger'); } }, { label: 'Nội dung', render: function (x) { return x.ok ? [x.summary].concat(x.dup ? x.issues.filter(function (i) { return i.severity === 'WARNING'; }).map(function (i) { return h('div', { class: 'hint' }, '⚠ ' + i.message); }) : []) : x.issues.map(function (i) { return h('div', { class: 'errmsg' }, '✖ ' + i.message); }); } }], pv.rows));
+            var dupN = pv.duplicates ? pv.duplicates.existing + pv.duplicates.inBatch : 0, dupChk = h('input', { type: 'checkbox', 'data-ack-dup': '1' });
+            if (dupN && pv.canCommit)
+                out.appendChild(h('div', { class: 'msg warn', role: 'alert' }, h('b', null, dupN + ' dòng nghi trùng: '), pv.duplicates.existing + ' dòng giống khoản đã có, ' + pv.duplicates.inBatch + ' dòng trùng nhau trong tệp. Nếu bạn nhập lại tệp cũ, ghi tiếp sẽ làm TĂNG ĐÔI doanh thu/chi phí.', h('div', null, h('label', { class: 'chk' }, dupChk, 'Tôi đã kiểm tra: đây là các khoản riêng, vẫn ghi'))));
             if (pv.canCommit)
                 out.appendChild(h('div', { class: 'bar' }, (function () { var b = h('button', { class: 'primary', onclick: async function () { b.disabled = true; try {
-                        var res = await api('order.bulkCommit', { kind: kind, rows: rows }, { write: true });
+                        if (dupN && !dupChk.checked) {
+                            toast('Có dòng nghi trùng: tích xác nhận nếu đúng là khoản riêng, hoặc sửa tệp.', 'warn');
+                            return;
+                        }
+                        var res = await api('order.bulkCommit', { kind: kind, rows: rows, acknowledgeDuplicates: dupChk.checked }, { write: true });
                         (res.warnings || []).forEach(function (w) { toast(w.message, 'warn'); });
                         toast('Đã ghi ' + res.created.accruals + ' khoản' + (res.created.orders ? ' và tạo ' + res.created.orders + ' đơn hàng' : ''));
                         bulkState.text = '';
@@ -4588,7 +4595,7 @@ VIEWS.bulk = async function (r) {
                             e.fields.forEach(function (f) { out.appendChild(h('div', { class: 'errmsg' }, '✖ ' + f.message)); });
                         }
                         else if (e.code === 'CREDIT_BLOCKED' && can('credit.override')) {
-                            promptReason(e.message, async function (reason) { var res2 = await api('order.bulkCommit', { kind: kind, rows: rows, overrideCredit: true, overrideReason: reason }, { write: true }); toast('Đã ghi (vượt hạn mức có lý do)'); go('orders'); }, 'Vượt hạn mức & ghi');
+                            promptReason(e.message, async function (reason) { var res2 = await api('order.bulkCommit', { kind: kind, rows: rows, acknowledgeDuplicates: dupChk.checked, overrideCredit: true, overrideReason: reason }, { write: true }); toast('Đã ghi (vượt hạn mức có lý do)'); go('orders'); }, 'Vượt hạn mức & ghi');
                         }
                         else
                             showError(e);

@@ -946,6 +946,17 @@ await suite('53. Ô tỷ giá đọc cả 25.438,5 lẫn 25,438.5 và báo lỗi
   const bad=await pg.evaluate(()=>apiFx('fx.save',{currency:'USD',rateDate:'2026-10-24',rate:'0.01',buy:'',sell:'',note:''},{write:true}).then(()=>'OK',e=>(e.fields&&e.fields[0]&&e.fields[0].code)||String(e)));eq(bad,'FX_OUT_OF_RANGE','ngoài khoảng tuyệt đối: không có đường xác nhận');
   eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
 });
+await suite('54. Nhập lại cùng tệp PO/doanh thu: xem trước báo "Trùng khoản đã có", không ghi nếu chưa tích xác nhận, tích xác nhận mới ghi',async()=>{
+  const w=build();const {pg,errs}=await newPage(browser,w);await pg.evaluate(()=>{S.dirty=false});
+  const line='ABC\tPO-DUP-1\t11/10/2026\tG1\tVND\tFWD\tF\tCước vận chuyển\t\t\t1.000\tKCT\t0';
+  const submit=async()=>{await go(pg,'#/bulk?kind=REVENUE',700);await pg.fill('textarea',line);await pg.click('button:has-text("Xem trước")');await pg.waitForSelector('#main table, #main .msg',{timeout:6000});await pg.waitForTimeout(500)};
+  const n0=w.T.Accrual.length;await submit();
+  eq(await pg.locator('[data-ack-dup]').count(),0,'lần đầu không có ô xác nhận trùng');await pg.click('button:has-text("Ghi chính thức")');await pg.waitForTimeout(900);eq(w.T.Accrual.length,n0+1,'lần đầu ghi 1 khoản');
+  await submit();const tx=await pg.locator('#main').innerText();ok(/Trùng khoản đã có/.test(tx)&&/nghi trùng/.test(tx),'lần hai báo trùng: '+tx.slice(0,300));eq(await pg.locator('[data-ack-dup]').count(),1,'có ô xác nhận');
+  await pg.click('button:has-text("Ghi chính thức")');await pg.waitForTimeout(700);eq(w.T.Accrual.length,n0+1,'chưa tích xác nhận: không ghi thêm');
+  await pg.locator('[data-ack-dup]').check();await pg.click('button:has-text("Ghi chính thức")');await pg.waitForTimeout(900);eq(w.T.Accrual.length,n0+2,'đã xác nhận: ghi');
+  eq(errs.filter(e=>!/flowDoc/.test(e)),[]);await pg.close();
+});
 await browser.close();
 try{fs.rmSync(TMP,{recursive:true,force:true})}catch(e){}
 const blocked=results.filter(r=>r[2]==='blocked').length;

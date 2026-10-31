@@ -2448,6 +2448,16 @@ function perfListSliceSet(on, gap) { props_().setProperty('PERF_LIST_SLICE', on 
     props_().setProperty('PERF_SLICE_GAP', String(gap)); }
 function listRows_(t) { return perfListSlice_() ? repoSliceValid_(t, LIST_COLS_[t], MEMO_.listGap) : repoValid_(t); }
 function loadLedger_(user, asOf) {
+    // Lượt dựng bảng tổng hợp (chỉ đọc, người dùng hệ thống): 5 mô hình cùng cần một sổ cùng ngày → tính một lần.
+    var memoOn = MEMO_.rmLed && user === RM_USER_;
+    if (memoOn && MEMO_.rmLed[asOf])
+        return MEMO_.rmLed[asOf];
+    var led = loadLedgerRaw_(user, asOf);
+    if (memoOn && MEMO_.rmLed)
+        MEMO_.rmLed[asOf] = led;
+    return led;
+}
+function loadLedgerRaw_(user, asOf) {
     var pm = partnerMap_();
     var docs = listRows_('DebtDoc').filter(function (d) { return inScope_(user, pm[d.partnerId], d.businessGroupCode); });
     var dset = byId_(docs);
@@ -2667,7 +2677,7 @@ function dashboardSummaryLive_(user, req) {
         var me = monthEnd_(mo);
         if (me > asOf)
             me = asOf;
-        var b = computeBalances(led.docs, led.lines, led.allocs, me);
+        var b = me === asOf && led.asOf === asOf ? led.bal : computeBalances(led.docs, led.lines, led.allocs, me);
         Object.keys(b.byLine).forEach(function (id) {
             var d = led.docById[b.byLine[id].docId];
             if (p.currency && d.currency !== p.currency)
@@ -4979,12 +4989,18 @@ function accrualSave_(user, req) {
         var l = calc.line, fields = { orderId: mode === 'ORDER' ? o.id : '', serviceCode: svcCode, kind: p.kind, partnerId: partner.id, poRef: maxStr_(p.poRef, 100).trim(), accrualDate: p.accrualDate, feeTypeCode: l.feeTypeCode, description: l.description, containerQty: l.containerQty, unitPrice: l.unitPrice,
             netMinor: l.netMinor, vatMode: l.vatMode, vatRateBp: l.vatRateBp, vatMinor: l.vatMinor, grossMinor: l.grossMinor, isPassThrough: l.isPassThrough, currency: p.currency, note: maxStr_(p.note, 300) };
         var creditWarn = p.kind === 'REVENUE' ? enforceCredit_(tx, user, partner.id, p.currency, todayVn_(), existing ? l.grossMinor - existing.grossMinor : l.grossMinor, p) : [];
+        var dupWarn = [];
+        if (!existing) {
+            var dk0 = accrualDupKey_(p.kind, fields.orderId || (shares ? 'S:' + shares.map(function (x) { return x.orderId; }).sort().join(',') : 'G'), partner.id, svcCode, l, p.currency, p.accrualDate, fields.poRef), same = accrualDupIndex_(tx.rows('Accrual'), tx.rows('AccrualSplit'), p.kind)[dk0];
+            if (same)
+                dupWarn.push({ code: 'ACCRUAL_SUSPECT_DUP', message: 'Khoản này giống một khoản đã có (cùng đơn, ngày, loại phí, số tiền). Nếu nhập nhầm hai lần, hãy hủy một khoản.' });
+        }
         var row = existing ? tx.update('Accrual', existing.id, fields, p.ifVersion) : tx.insert('Accrual', Object.assign({ status: 'OPEN', docId: '', debtLineId: '' }, fields));
         tx.rows('AccrualSplit').forEach(function (x) { if (x.accrualId === row.id)
             tx.update('AccrualSplit', x.id, { isDeleted: 1 }); });
         if (shares)
             shares.forEach(function (x) { tx.insert('AccrualSplit', { accrualId: row.id, orderId: x.orderId, shareNetMinor: x.net, shareVatMinor: x.vat, shareGrossMinor: x.net + x.vat, basis: x.basis, note: '' }); });
-        return { result: { id: row.id, grossMinor: l.grossMinor, status: 'OPEN', allocMode: mode, splitCount: shares ? shares.length : 0, warnings: creditWarn },
+        return { result: { id: row.id, grossMinor: l.grossMinor, status: 'OPEN', allocMode: mode, splitCount: shares ? shares.length : 0, warnings: creditWarn.concat(dupWarn) },
             audit: [{ entityType: o ? 'Order' : 'Accrual', entityId: o ? o.id : row.id, action: existing ? 'accrual.update' : 'accrual.create', diff: { kind: p.kind, gross: l.grossMinor, currency: p.currency, mode: mode, orders: shares ? shares.length : undefined } }] };
     });
 }
@@ -5354,9 +5370,26 @@ function bulkFindFee_(feeTypes, v) { var n = normText_(v); if (!n)
     return null; for (var i = 0; i < feeTypes.length; i++)
     if (normText_(feeTypes[i].code) === n || normText_(feeTypes[i].name) === n)
         return feeTypes[i].code; return null; }
+// Dấu vân tay của một khoản phát sinh: hai khoản cùng loại/đơn (hoặc cùng cách chia)/đối tác/mã dịch vụ/loại phí/ngày/tiền tệ/số tiền/thuế/số lượng/diễn giải/PO nhà cung cấp coi là NGHI TRÙNG.
+function accrualDupKey_(kind, orderKey, partnerId, serviceCode, line, currency, date, poRef) {
+    return [kind, orderKey, partnerId, serviceCode || '', line.feeTypeCode, date, currency, line.netMinor, line.vatMode, line.vatRateBp || 0, line.isPassThrough ? 1 : 0, line.containerQty === null || line.containerQty === undefined ? '' : line.containerQty, normText_(line.description || ''), normText_(poRef || '')].join('|');
+}
+function accrualDupIndex_(rows, splitRows, kind) {
+    var spl = {}, idx = {};
+    (splitRows || []).forEach(function (x) { if (x.isDeleted !== 1)
+        (spl[x.accrualId] = spl[x.accrualId] || []).push(x.orderId); });
+    (rows || []).forEach(function (a) {
+        if (a.status === 'CANCELLED' || a.isDeleted === 1 || (kind && a.kind !== kind))
+            return;
+        var ok = a.orderId || (spl[a.id] ? 'S:' + spl[a.id].slice().sort().join(',') : 'G'), k = accrualDupKey_(a.kind, ok, a.partnerId, a.serviceCode, a, a.currency, a.accrualDate, a.poRef);
+        if (!idx[k])
+            idx[k] = a;
+    });
+    return idx;
+}
 function bulkBuild_(env, kind, rows) {
     var partners = env.rows('Partner').filter(function (p) { return p.status === 'ACTIVE'; }), feeTypes = catalogList_('FEE_TYPE'), cur = currencyMap_(), groups = catalogList_('BUSINESS_GROUP').map(function (c) { return c.code; }), ls = ledgerStart_();
-    var closedMonths = {}, orders = env.rows('Order').filter(function (o) { return o.status === 'OPEN'; }), newOrders = {}, createdIds = {}, rmap = serviceMap_(), results = [], created = { orders: 0, accruals: 0 }, creditExtra = {};
+    var closedMonths = {}, orders = env.rows('Order').filter(function (o) { return o.status === 'OPEN'; }), newOrders = {}, createdIds = {}, rmap = serviceMap_(), results = [], created = { orders: 0, accruals: 0 }, creditExtra = {}, dupIdx = null, batchKeys = {}, duplicates = { existing: 0, inBatch: 0 };
     env.rows('Period').forEach(function (pe) { if (pe.status === 'CLOSED')
         closedMonths[pe.id] = 1; });
     function pfind(name, role) { var n = normText_(name), hits = partners.filter(function (p) { return (role === 'C' ? p.isCustomer : p.isSupplier) && (normText_(p.shortName) === n || normText_(p.legalName) === n); }); return hits.length === 1 ? hits[0] : (hits.length > 1 ? 'AMBIGUOUS' : null); }
@@ -5539,6 +5572,21 @@ function bulkBuild_(env, kind, rows) {
             }
         }
         if (!issues.length && res.line && (order || (kind === 'COST' && mode !== 'ORDER'))) {
+            if (!dupIdx)
+                dupIdx = accrualDupIndex_(env.rows('Accrual'), env.rows('AccrualSplit'), kind);
+            var dk = accrualDupKey_(kind, order ? order.id : (res.shares ? 'S:' + res.shares.map(function (x) { return x.orderId; }).sort().join(',') : 'G'), partner.id, order ? svcCode : '', res.line, currency, date, kind === 'COST' ? maxStr_(r.poRef, 100).trim() : ''), dupOf = dupIdx[dk];
+            if (dupOf) {
+                res.dup = 'EXISTING';
+                duplicates.existing++;
+                issues.push({ field: 'row', code: 'DUPLICATE_EXISTING', severity: 'WARNING', message: 'Giống khoản đã có (cùng đơn, ngày ' + rptDateVn_(date) + ', loại phí, số tiền).' });
+            }
+            else if (batchKeys[dk]) {
+                res.dup = 'IN_BATCH';
+                duplicates.inBatch++;
+                issues.push({ field: 'row', code: 'DUPLICATE_IN_BATCH', severity: 'WARNING', message: 'Giống dòng ' + batchKeys[dk] + ' trong cùng tệp.' });
+            }
+            else
+                batchKeys[dk] = i + 1;
             var a = env.insert('Accrual', { orderId: order ? order.id : '', serviceCode: order ? svcCode : '', kind: kind, partnerId: partner.id, poRef: kind === 'COST' ? maxStr_(r.poRef, 100).trim() : '', accrualDate: date, feeTypeCode: res.line.feeTypeCode, description: res.line.description, containerQty: res.line.containerQty, unitPrice: res.line.unitPrice,
                 netMinor: res.line.netMinor, vatMode: res.line.vatMode, vatRateBp: res.line.vatRateBp, vatMinor: res.line.vatMinor, grossMinor: res.line.grossMinor, isPassThrough: res.line.isPassThrough, currency: currency, status: 'OPEN', docId: '', debtLineId: '', note: 'Nhập hàng loạt' });
             if (res.shares)
@@ -5554,7 +5602,7 @@ function bulkBuild_(env, kind, rows) {
         }
         results.push(res);
     });
-    return { results: results, created: created, creditExtra: creditExtra };
+    return { results: results, created: created, creditExtra: creditExtra, duplicates: duplicates };
 }
 function fmtPlain_(minor, dec) { return formatMinorVn_(minor, dec); }
 function orderBulkPreview_(user, req) {
@@ -5568,7 +5616,7 @@ function orderBulkPreview_(user, req) {
         throw err_('VALIDATION_FAILED', 'Tối đa 1.000 dòng một lần.');
     var seq = 0, env = { preview: true, update: function () { }, user: user, rows: function (t) { return repoValid_(t); }, insert: function (t, o) { return Object.assign({ id: 'preview_' + (++seq) }, o); }, nextSeq: function () { return 0; } };
     var out = bulkBuild_(env, p.kind, p.rows), bad = out.results.filter(function (r) { return !r.ok; }).length;
-    return { rows: out.results.map(function (r) { return { rowNo: r.rowNo, ok: r.ok, issues: r.issues, summary: r.summary }; }), errors: bad, created: out.created, canCommit: bad === 0 };
+    return { rows: out.results.map(function (r) { return { rowNo: r.rowNo, ok: r.ok, issues: r.issues, summary: r.summary, dup: r.dup || '' }; }), errors: bad, created: out.created, duplicates: out.duplicates, canCommit: bad === 0 };
 }
 function orderBulkCommit_(user, req) {
     requirePerm_(user, 'order.write');
@@ -5581,9 +5629,12 @@ function orderBulkCommit_(user, req) {
         var out = bulkBuild_({ user: user, rows: tx.rows, insert: tx.insert, update: tx.update, nextSeq: tx.nextSeq }, p.kind, p.rows), bad = out.results.filter(function (r) { return !r.ok; });
         if (bad.length)
             throw err_('VALIDATION_FAILED', 'Còn ' + bad.length + ' dòng lỗi, chưa ghi dòng nào.', bad.reduce(function (a, r) { return a.concat(r.issues.map(function (i) { return { path: 'row' + r.rowNo + '.' + i.field, code: i.code, message: 'Dòng ' + r.rowNo + ': ' + i.message }; })); }, []));
+        var dupN = out.duplicates.existing + out.duplicates.inBatch;
+        if (dupN && p.acknowledgeDuplicates !== true)
+            throw err_('DUPLICATE_SUSPECTED', dupN + ' dòng giống khoản đã có (' + out.duplicates.existing + ') hoặc trùng nhau trong tệp (' + out.duplicates.inBatch + '). Chưa ghi dòng nào. Kiểm tra nếu nhập lại tệp cũ; nếu đúng là các khoản riêng thì xác nhận rồi ghi lại.', out.results.filter(function (r) { return r.dup; }).map(function (r) { return { path: 'row' + r.rowNo, code: 'DUPLICATE_' + (r.dup === 'EXISTING' ? 'EXISTING' : 'IN_BATCH'), message: 'Dòng ' + r.rowNo + (r.dup === 'EXISTING' ? ' giống khoản đã có.' : ' trùng dòng khác trong tệp.') }; }));
         var warnings = [];
         Object.keys(out.creditExtra).forEach(function (k) { var x = k.split('|'); enforceCredit_(tx, user, x[0], x[1], todayVn_(), out.creditExtra[k], p).forEach(function (w) { warnings.push(w); }); });
-        return { result: { created: out.created, warnings: warnings }, audit: [{ entityType: 'Order', entityId: 'bulk', action: 'order.bulk.' + p.kind.toLowerCase(), diff: { created: out.created } }] };
+        return { result: { created: out.created, duplicates: out.duplicates, warnings: warnings }, audit: [{ entityType: 'Order', entityId: 'bulk', action: 'order.bulk.' + p.kind.toLowerCase(), diff: { created: out.created, duplicatesAcknowledged: dupN } }] };
     });
 }
 // ---- Nhập hàng loạt HÓA ĐƠN bán (phải thu) / hóa đơn mua (phải trả): mỗi hóa đơn = một chứng từ NHÁP nhiều dòng phí; dùng đúng luật kiểm tra của doc.save.
@@ -10082,7 +10133,14 @@ function rmBuildSet_() {
 }
 function rmBuildSetLocked_(leaseToken) {
     var today = todayVn_(), v = beginReadSnapshot_(), values = {}, names = Object.keys(RM_MODELS_);
-    names.forEach(function (m) { values[m] = rmBuild_(m, today); });
+    MEMO_.rmLed = {};
+    try {
+        names.forEach(function (m) { values[m] = rmBuild_(m, today); });
+    }
+    finally {
+        if (MEMO_.rmLed)
+            delete MEMO_.rmLed;
+    }
     assertReadSnapshot_(v);
     var meta = { dataVersion: v, builtAt: nowIso_(), asOf: today }, models = [];
     resetMemo_();
